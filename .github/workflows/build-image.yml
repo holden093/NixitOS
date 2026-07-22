@@ -50,6 +50,8 @@ jobs:
           sudo apt-get install --yes ripgrep
 
       - name: Static validation
+        env:
+          ARIAOS_TEST_WITH_SUDO: 1
         run: ./scripts/validate.sh
 
       - name: Maximize build space

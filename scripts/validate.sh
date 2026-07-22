@@ -9,7 +9,11 @@ for check in shell policy containerfile; do
   bash "scripts/validate/${check}.sh"
 done
 
-bash tests/operational.sh
+if [[ ${ARIAOS_TEST_WITH_SUDO:-0} == 1 ]]; then
+  sudo --non-interactive env ARIAOS_TEST_DIRECT_ROOT=1 bash tests/operational.sh
+else
+  bash tests/operational.sh
+fi
 
 git diff --check
 echo "Static validation passed."

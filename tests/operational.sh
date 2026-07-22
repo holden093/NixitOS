@@ -33,12 +33,22 @@ mock_commands() {
 }
 
 run_as_mock_root() {
-  unshare -Ur env PATH="$ARIAOS_TEST_STATE/bin:/usr/bin:/bin" \
-    ARIAOS_TEST_LOG="$ARIAOS_TEST_LOG" \
-    ARIAOS_TEST_STATE="$ARIAOS_TEST_STATE" \
-    ARIAOS_TEST_MOUNT="$ARIAOS_TEST_MOUNT" \
-    ARIAOS_TEST_SCENARIO="${ARIAOS_TEST_SCENARIO:-}" \
-    "$@"
+  local -a test_environment=(
+    env
+    "PATH=$ARIAOS_TEST_STATE/bin:/usr/bin:/bin"
+    "ARIAOS_TEST_LOG=$ARIAOS_TEST_LOG"
+    "ARIAOS_TEST_STATE=$ARIAOS_TEST_STATE"
+    "ARIAOS_TEST_MOUNT=$ARIAOS_TEST_MOUNT"
+    "ARIAOS_TEST_SCENARIO=${ARIAOS_TEST_SCENARIO:-}"
+  )
+
+  if [[ ${ARIAOS_TEST_DIRECT_ROOT:-0} == 1 ]]; then
+    (( EUID == 0 )) || fail "direct-root mode requires root privileges"
+    "${test_environment[@]}" "$@"
+    return
+  fi
+
+  unshare -Ur "${test_environment[@]}" "$@"
 }
 
 new_environment backup_failure
