@@ -15,9 +15,9 @@ This skill helps you refine the AriaOS codebase by comparing it with the active 
 - Check active services (`systemctl list-units --type=service --state=running`) and cross-reference with the codebase to see if they are necessary or can be optimized.
 
 ### 2. Layer & Build Optimization
-- Group `rpm-ostree install` commands to reduce image layers.
+- Group build-time `dnf5 install` commands to reduce image layers.
 - Use multi-stage builds if necessary for temporary build tools.
-- Ensure `rpm-ostree cleanup -m` is used after every major install step.
+- Ensure `dnf5 clean all` is used after every major install step.
 
 ### 3. Performance Tuning
 - Suggest `sysctl` tweaks based on hardware (e.g., eGPU usage, SSD optimization).
@@ -26,7 +26,7 @@ This skill helps you refine the AriaOS codebase by comparing it with the active 
 
 ### 4. Hardware-Specific Refinements
 - Use `lshw`, `lspci`, and `lsusb` to detect hardware and suggest missing drivers or firmware in the `Containerfile`.
-- Optimize for Intel Arc compute tasks if `intel-compute-runtime` is present.
+- Validate Intel Arc desktop, media, OpenCL, and Level Zero support without assuming a particular model engine.
 
 ## Best Practices
 - Refer to `references/best-practices.md` for detailed guidance on `blue-build` and `bootc`.

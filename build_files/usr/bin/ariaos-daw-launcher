@@ -1,18 +1,38 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -u
 
 # AriaOS Dynamic DAW Launcher
 # Cambia il profilo energetico prima di avviare la DAW e lo ripristina alla chiusura.
 
-if [ -z "$1" ]; then
+if [[ $# -eq 0 ]]; then
     echo "Usage: ariaos-daw-launcher <executable> [args...]"
     exit 1
 fi
 
+TUNED_ADM=${ARIAOS_TUNED_ADM:-/usr/sbin/tuned-adm}
+SUDO=${ARIAOS_SUDO:-sudo}
+
+original_profile=$($TUNED_ADM active 2>/dev/null | sed -n 's/^Current active profile: //p')
+original_profile=${original_profile:-balanced-battery}
+restored=0
+
+restore_profile() {
+    local status=$?
+    trap - EXIT INT TERM
+    if (( restored == 0 )); then
+        echo "AriaOS: Ripristino profilo $original_profile..."
+        "$SUDO" "$TUNED_ADM" profile "$original_profile" || true
+        restored=1
+    fi
+    exit "$status"
+}
+trap restore_profile EXIT INT TERM
+
 echo "AriaOS: Attivazione profilo latency-performance per la DAW..."
-sudo /usr/sbin/tuned-adm profile latency-performance
+if ! "$SUDO" "$TUNED_ADM" profile latency-performance; then
+    echo "Errore: impossibile attivare il profilo latency-performance." >&2
+    exit 1
+fi
 
 # Esegue la DAW passando tutti gli argomenti e aspetta che venga chiusa
 "$@"
-
-echo "AriaOS: Ripristino profilo balanced-battery..."
-sudo /usr/sbin/tuned-adm profile balanced-battery

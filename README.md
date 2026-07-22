@@ -1,110 +1,129 @@
-# 🏨 AriaOS
+# AriaOS
 
-**Un sistema operativo immutabile, minimale e ottimizzato per workload AI locali.**
+AriaOS è un sistema operativo personale, immutabile e dichiarativo basato su Fedora Silverblue 44, `bootc` e `blue-build`.
 
----
+> [!WARNING]
+> Questa immagine è progettata per uno specifico laptop Intel Lunar Lake con eGPU NVIDIA Thunderbolt. Non è una distribuzione generica e può essere inadatta o pericolosa su hardware diverso.
 
-## ⚠️ Disclaimer Importante
+## Obiettivi
 
-**ATTENZIONE**: Questa repository **NON** è intesa per l'uso pubblico o generale. AriaOS è una configurazione (basata su `bootc` e `blue-build`) creata in modo sartoriale esclusivamente per uno specifico hardware locale. Contiene script e regole che potrebbero causare instabilità su macchine diverse. **Non installare questa immagine sul tuo computer.**
+- Sistema riproducibile: ogni modifica persistente vive nel repository.
+- Base nativa essenziale, con Flatpak e Distrobox per applicazioni non critiche.
+- Intel Arc sempre disponibile per desktop, media e calcolo OpenCL/Level Zero.
+- NVIDIA eGPU completamente disattivata all'avvio e attivabile solo su richiesta.
+- Backup giornalieri e ripristino bare-metal indipendenti.
+- Buona autonomia nell'uso normale e tuning dinamico per sessioni audio.
 
----
+## Piattaforma
 
-## ✨ Caratteristiche Principali
-
-* **Immutabilità & GitOps**: Ogni modifica al sistema operativo è tracciata in questa repository (nel `Containerfile` o in `build_files/`) e "buildata" in un'immagine container.
-* **Gestione Hardware Asimmetrica**:
-  * **Intel Arc (Lunar Lake)**: Supporto nativo integrato tramite `intel-compute-runtime` e `intel-level-zero` per l'accelerazione hardware (SYCL/Vulkan) a basso consumo.
-  * **NVIDIA eGPU (On-Demand)**: Driver NVIDIA bloccati all'avvio (`blacklist`). Attivazione manuale tramite script dedicato che carica l'intero stack (incluso DRM). Richiede disconnessione "fredda" (Log-Out/Riavvio) per il rilascio.
-* **Minimalismo Estremo**: Pruning dei pacchetti ingombranti (mantenendo solo il supporto essenziale En/It). Rimozione di GNOME Software e uso esclusivo di CLI per pacchetti e Flatpak.
-* **Storage GitOps (Subvolumi Dinamici)**: Utilizzo nativo di `systemd-tmpfiles` per creare automaticamente subvolumi Btrfs per i dati pesanti (es. `llms`, `games`) in `/var`. Questi vengono poi collegati alla `/var/home` via symlink, garantendo che i backup della Home tramite snapshot siano leggerissimi ed escludano automaticamente questi enormi file. Il filesystem Btrfs utilizza compressione nativa trasparente (`zstd:1`) per prolungare la vita dell'SSD, insieme a task periodici e automatizzati in background (scrub e bilanciamento tramite `btrfsmaintenance`) per prevenire il *bit-rot* e garantire l'integrità dei dati a lungo termine.
-* **Ottimizzazione CPU Avanzata**: Disattivazione dell'NMI Watchdog (`nowatchdog`) per permettere ai core di raggiungere i C-states di sonno più profondi.
-* **Ottimizzazione RAM per AI**: zRAM configurata a 16GB (algoritmo `zstd`) per comprimere il sistema operativo e lasciare la memoria fisica (32GB) libera per i modelli LLM.
-* **Audio a Bassa Latenza (Dynamic Tuning)**: Abbandono dei parametri kernel energivori in favore di uno script wrapper (`ariaos-daw-launcher`) che massimizza le frequenze e riduce le latenze tramite `tuned` **solo** durante l'uso della DAW, preservando la batteria nell'uso quotidiano.
-* **Sicurezza & Cifratura TPM 2.0**: Supporto nativo LUKS2 automatizzato tramite chip TPM 2.0 usando Discoverable Partitions Specification (DPS).
-
-## 🚦 Avvio Rapido
-
-Per passare da un'installazione pulita di Fedora a AriaOS con tutti i dati:
-
-1. **Installa Fedora (Silverblue/Kinoite/Base)**: Assicurati di creare un subvolume Btrfs separato per `/home` e spunta **"Encrypt my data"** durante l'installazione.
-2. **Rebase su AriaOS**: Apri il terminale nel nuovo sistema ed esegui il rebase:
-   ```bash
-   sudo bootc switch ghcr.io/holden093/ariaos:latest
-   ```
-   *(Attendi il completamento e riavvia il sistema).*
-3. **Ripristino della Home (TUI)**: Al riavvio, prima del login grafico, passa a una TTY (`Ctrl+Alt+F3`), collega il disco USB di backup e lancia:
-   ```bash
-   sudo restore
-   ```
-4. **Abilita Audio a Bassa Latenza** (Obbligatorio per produzione audio):
-   Affinché le ottimizzazioni in tempo reale e lo script `ariaos-daw-launcher` funzionino, devi aggiungere il tuo utente ai gruppi `realtime` e `audio`:
-   ```bash
-   sudo usermod -aG realtime,audio $USER
-   ```
-   > **Nota Importante:** Dopo aver eseguito il comando, è **obbligatorio** effettuare un Logout e Login (o riavviare il sistema) affinché le modifiche ai gruppi abbiano effetto.
-5. **Associa la chiave LUKS al TPM 2.0** (Opzionale per Zero-Config):
-   ```bash
-   sudo systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 /dev/nvme0n1p3
-   ```
-6. **Riavvia** e accedi alla tua nuova sessione completamente configurata.
-
-## 🛠️ Stack Tecnico
-
-| Componente | Tecnologia / Ruolo |
+| Area | Configurazione |
 |---|---|
-| **OS Base** | Fedora Silverblue 44 |
-| **Paradigma** | Immutabile via `bootc` e `blue-build` |
-| **Display Server** | GNOME (Wayland) con Tema Yaru |
-| **GPU Primaria** | Intel Arc (Lunar Lake) |
-| **GPU Secondaria** | NVIDIA eGPU (Thunderbolt) |
-| **Filesystem & Crypto** | Btrfs + LUKS2 + TPM 2.0 |
-| **Memory Management** | zRAM (16GB, zstd) |
+| Base | Fedora Silverblue 44, `bootc`, `blue-build` |
+| Desktop | GNOME Wayland con tema Yaru |
+| GPU primaria | Intel Arc Lunar Lake |
+| GPU secondaria | NVIDIA eGPU Thunderbolt on-demand |
+| Storage | Btrfs con compressione `zstd:1` |
+| Cifratura | LUKS2, TPM 2.0 e Discoverable Partitions Specification |
+| Memoria | 32 GB RAM, zRAM da 16 GB con `zstd` |
 
-## 📁 Struttura del Progetto
+## Funzionalità principali
 
-* `Containerfile`
-* `build_files/`
-  * `etc/`
-  * `usr/`
-* `.github/workflows/`
-* `.antigravity/skills/`
-* `AGENTS.md`
-* `README.md`
-* `LICENSE`
+### GPU e calcolo
 
-## 🛡️ Moduli Amministrativi/Operativi
+Intel Arc dispone di `intel-compute-runtime`, `intel-level-zero`, OpenCL e strumenti Vulkan. Il sistema è quindi pronto per futuri runtime di inferenza, ma non include motori LLM, chatbot, directory per modelli o servizi GGUF.
 
-Gli script operativi sono installati in `/usr/bin/` e pronti all'uso:
+I moduli NVIDIA restano bloccati tramite regole `install <module> /bin/false`. `egpu-up.sh` li carica esplicitamente con `--ignore-install`; `egpu-down.sh` li rimuove quando non sono più in uso.
 
-* **`egpu-up.sh`**: Attiva la eGPU NVIDIA caricando l'intero stack di driver (inclusi `nvidia_modeset` e `nvidia_drm`) e impostando permessi aperti (`0666`). Consente l'uso sia per inferenza AI che per rendering grafico (Wayland/GNOME).
-* **`egpu-down.sh`**: Rimuove i driver NVIDIA in modo pulito dal kernel. Poiché lo script di avvio carica anche i driver DRM, prima di eseguire questo script è necessario effettuare il LOG-OUT o riavviare per liberare la GPU dal display server.
-* **Pika Backup (Raccomandato)**: Questa è l'app ufficiale per i backup quotidiani, incrementali e navigabili. Poiché è profondamente integrata con GNOME, è un'eccezione alla regola "Niente Flatpak per app critiche" e va installata manualmente dall'utente via Flathub (`org.gnome.World.PikaBackup`). Perfetta per eseguire il backup sul NAS (SMB/SFTP) o dischi esterni in stile Time Machine.
-* **`backup`**: Utility TUI legacy per il Disaster Recovery "Bare-Metal". Esporta la `/var/home` in un file monolitico zstd sfruttando `btrfs send`. Da usare per backup integrali offline su USB prima di formattare.
-* **`restore`**: Utility TUI basata su `btrfs receive` per ripristinare il backup monolitico zstd su installazioni pulite.
+> [!CAUTION]
+> Dopo l'attivazione, GNOME/Wayland può acquisire la eGPU. Prima di eseguire `egpu-down.sh` o scollegare il cavo è necessario terminare la sessione grafica o riavviare.
 
-## 🤖 AI Locale & Motore GGUF AriaOS
+### Backup e storage
 
-AriaOS include un workflow AI locale profondamente integrato tramite container Podman di `llama.cpp`, orchestrati direttamente via `podman compose`.
+- **Pika Backup**: backup incrementali quotidiani. È l'unica applicazione critica autorizzata come Flatpak (`org.gnome.World.PikaBackup`).
+- **`backup`**: esporta `/var/home` come stream Btrfs compresso su un disco esterno.
+- **`restore`**: valida e riceve lo stream, conserva la home precedente e tenta il rollback se l'attivazione fallisce.
+- **`/var/games`**: subvolume separato dagli snapshot della home, gestito tramite `systemd-tmpfiles` e gruppo `aria-games`.
 
-Il motore rileva dinamicamente il contesto hardware:
-- **Modalità iGPU:** Predefinita su Intel Arc (SYCL) per un'inferenza a basso consumo energetico.
-- **Modalità eGPU:** Se la eGPU NVIDIA Thunderbolt è collegata e autorizzata, il motore riconfigura dinamicamente lo stack per usare il container CUDA e scaricare il carico sulla RTX 3060.
+### Audio
 
-### Comandi AI Comuni
-- `podman compose -f /usr/share/aria-gguf-engine/compose.yaml up -d` / `... down` - Avvia/Ferma il server di inferenza.
-### 💬 Chatbot Locale (aria)
+`ariaos-daw-launcher` applica il profilo `latency-performance` soltanto durante la sessione DAW e ripristina automaticamente il profilo precedente. Non vengono usati kernel realtime di terze parti né parametri realtime permanenti.
 
-`aria` è un chatbot interattivo da terminale che si connette al motore di inferenza locale. Supporta ricerca web e comandi di sistema.
+### Kubernetes
 
-- **Avvio:** `aria`.
-- **Profilo locale:** il rilevamento automatico preferisce i profili `32k`, mantenendo il budget GPU condiviso entro circa 10 GiB.
-- **Ricerca web:** Il modello chiama automaticamente DuckDuckGo quando necessario. Forzabile con `/web <query>`.
-- **Stato sistema:** Il modello rileva automaticamente quando l'utente chiede informazioni sul sistema. Forzabile con `/sys [cpu|mem|disk|gpu|proc]`.
-- **Comandi:** `/help`, `/new`, `/exit`
+L'immagine include:
 
-Dipende dal container `aria-gguf-engine` in esecuzione su `127.0.0.1:8080`. La definizione del motore è centralizzata nel repo in `build_files/usr/share/aria-gguf-engine/` e viene installata in `/usr/share/aria-gguf-engine/`; non dipende da directory operative esterne nella home utente.
+- `kubectl`
+- Helm
+- Minikube
+- `kubectx`
+- `kubens`
+- completamento Bash per kubectl e Minikube
 
-## 📖 Documentazione
+Minikube è destinato al driver Podman rootless già presente. Non viene installato Docker e non viene avviato alcun cluster permanente.
 
-Per i dettagli tecnici, i vincoli architetturali completi, la pipeline GitOps e le istruzioni esclusive per gli agenti IA, consulta il file **[AGENTS.md](AGENTS.md)**. Costituisce la vera "Source of Truth" tecnica del progetto AriaOS.
+## Installazione
+
+Partendo da Fedora Silverblue installata con Btrfs e LUKS2:
+
+```bash
+sudo bootc switch ghcr.io/holden093/ariaos:latest
+sudo reboot
+```
+
+Dopo il primo avvio, aggiungere l'utente ai gruppi richiesti:
+
+```bash
+sudo usermod -aG realtime,audio,aria-games "$USER"
+```
+
+Terminare la sessione o riavviare affinché i nuovi gruppi siano applicati.
+
+Per associare il volume root al TPM usando PCR 7, sostituire il device con quello reale verificato tramite `lsblk`:
+
+```bash
+sudo systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 /dev/nvme0n1p3
+```
+
+PCR 8 e 9 non sono adatti a questo sistema: aggiornamenti `bootc` modificano kernel, riga di comando e initramfs e causerebbero richieste ricorrenti della passphrase di recupero.
+
+## Struttura del repository
+
+```text
+Containerfile                 orchestrazione degli stage di build
+build_files/                  filesystem finale dichiarativo
+scripts/build/                mutazioni temporanee eseguite durante la build
+scripts/validate/             controlli statici e contratto dell'immagine
+tests/                        test operativi isolati con comandi simulati
+versions/external-tools.env   versioni e checksum degli artefatti upstream
+.github/workflows/            build e pubblicazione dell'immagine
+AGENTS.md                     invarianti tecnici per gli agenti
+```
+
+I moduli in `scripts/build/` vengono montati da uno stage `scratch` e non rimangono nell'immagine finale.
+
+## Sviluppo e validazione
+
+Controlli rapidi:
+
+```bash
+./scripts/validate.sh
+```
+
+Validazione completa obbligatoria dopo modifiche a `Containerfile`, `build_files/`, moduli di build o dipendenze esterne:
+
+```bash
+./scripts/preflight.sh
+```
+
+Il preflight:
+
+1. esegue controlli statici e test operativi non distruttivi;
+2. costruisce l'intera immagine con Podman;
+3. verifica pacchetti, strumenti, completamenti, servizi, maschere, permessi e policy GPU;
+4. conferma che componenti ritirati e file di build non siano presenti.
+
+GitHub Actions applica lo stesso contratto `scripts/validate/image.sh` all'immagine costruita.
+
+## Licenza
+
+AriaOS è distribuito secondo GNU GPL v3.0. Consultare [LICENSE](LICENSE).

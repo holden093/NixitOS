@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+command_name=${0##*/}
+printf '%s %s\n' "$command_name" "$*" >> "${ARIAOS_TEST_LOG:?}"
+
+case "$command_name" in
+  btrfs)
+    case "${1:-} ${2:-}" in
+      "subvolume show")
+        case "${3:-}" in
+          /var/home|/var/home-backup|/var/home-restored) exit 0 ;;
+          *) exit 1 ;;
+        esac
+        ;;
+      "send /var/home-backup") printf 'stream' ;;
+      "receive /var/") cat >/dev/null; [[ ${ARIAOS_TEST_SCENARIO:-} != restore_invalid ]] ;;
+    esac
+    ;;
+  clear|mount|umount|mountpoint|nvidia-modprobe|udevadm|sleep|kill)
+    exit 0
+    ;;
+  date)
+    printf '1700000000\n'
+    ;;
+  dialog)
+    case " $* " in
+      *" --menu "*) printf '/dev/sdz1\n' ;;
+      *" --gauge "*) cat >/dev/null ;;
+    esac
+    ;;
+  du)
+    printf '4096 /var/home-backup\n'
+    ;;
+  ls)
+    exit 1
+    ;;
+  lsblk)
+    if [[ $* == *MOUNTPOINT* && $* != *FSTYPE* ]]; then
+      printf '%s\n' "${ARIAOS_TEST_MOUNT:?}"
+    else
+      printf 'sdz1 ext4 %s 64G\n' "${ARIAOS_TEST_MOUNT:?}"
+    fi
+    ;;
+  lsmod)
+    exit 0
+    ;;
+  lspci)
+    printf '01:00.0 VGA compatible controller: NVIDIA test adapter\n'
+    ;;
+  modprobe|chmod)
+    exit 0
+    ;;
+  mv)
+    if [[ ${ARIAOS_TEST_SCENARIO:-} == restore_rollback && ${2:-} == /var/home ]]; then
+      marker=${ARIAOS_TEST_STATE:?}/activation-attempted
+      if [[ ! -e $marker ]]; then
+        : > "$marker"
+        exit 1
+      fi
+    fi
+    exit 0
+    ;;
+  nvidia-smi)
+    printf 'GPU 0: Test NVIDIA GPU\n'
+    ;;
+  pv)
+    for argument in "$@"; do
+      if [[ -f $argument ]]; then
+        cat "$argument"
+        exit 0
+      fi
+    done
+    cat
+    ;;
+  stat)
+    printf '64\n'
+    ;;
+  sudo)
+    "$@"
+    ;;
+  tuned-adm)
+    if [[ ${1:-} == active ]]; then
+      printf 'Current active profile: balanced-battery\n'
+    fi
+    ;;
+  zstd)
+    output=
+    while (( $# > 0 )); do
+      if [[ $1 == -o ]]; then
+        output=$2
+        break
+      fi
+      shift
+    done
+    cat >/dev/null
+    : > "${output:?}"
+    exit 1
+    ;;
+  zstdcat)
+    if [[ ${ARIAOS_TEST_SCENARIO:-} == restore_invalid ]]; then
+      exit 1
+    fi
+    cat
+    ;;
+esac

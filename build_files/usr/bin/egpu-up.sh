@@ -43,7 +43,7 @@ if command -v nvidia-modprobe &> /dev/null; then
     chmod 0666 /dev/nvidia* 2>/dev/null || true
 fi
 
-echo "==> Verifica stato CUDA..."
+echo "==> Verifica stato driver NVIDIA..."
 if command -v nvidia-smi &> /dev/null; then
     echo "------------------------------------------------"
     nvidia-smi -L

@@ -1,127 +1,121 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
-# Controllo stringente sui privilegi di root
-if [ "$EUID" -ne 0 ]; then
-    echo "❌ Errore: Questo script deve essere eseguito come root o con sudo."
-    exit 1
-fi
+RECEIVED=/var/home-backup
+RESTORED=/var/home-restored
+MOUNT_POINT=
+TEMP_MOUNT=0
+ACTIVATED=0
 
-# Verifica dipendenze
-for cmd in btrfs dialog zstd pv lsblk; do
-  if ! command -v $cmd &> /dev/null; then
-    echo "Errore: comando richiesto '$cmd' non trovato. Assicurati che sia installato."
-    exit 1
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  if (( ACTIVATED == 0 )); then
+    btrfs subvolume delete "$RESTORED" >/dev/null 2>&1 || true
   fi
-done
+  btrfs subvolume delete "$RECEIVED" >/dev/null 2>&1 || true
+  if (( TEMP_MOUNT == 1 )) && mountpoint -q "$MOUNT_POINT"; then
+    umount "$MOUNT_POINT" || true
+  fi
+  if (( TEMP_MOUNT == 1 )) && [[ -n "$MOUNT_POINT" ]]; then
+    rmdir "$MOUNT_POINT" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap cleanup EXIT INT TERM
 
-# Trova partizioni potenzialmente usabili (esclude quelle di sistema)
-partitions=$(lsblk -rn -o NAME,FSTYPE,MOUNTPOINT,SIZE | awk '$2 != "" && $2 != "swap" && $2 != "vfat" && $2 != "efi" && $3 != "/" && $3 != "/boot" && $3 != "/var" && $3 != "[SWAP]" {print $1, $2, $4, $3}')
-
-if [ -z "$partitions" ]; then
-  dialog --msgbox "Nessuna partizione esterna valida trovata.\nAssicurati di aver collegato il disco USB con il backup." 8 60
+if (( EUID != 0 )); then
+  echo "❌ Errore: questo script deve essere eseguito come root o con sudo."
   exit 1
 fi
 
-# Menu
+for cmd in btrfs dialog zstdcat pv lsblk mount mountpoint umount stat; do
+  command -v "$cmd" >/dev/null || {
+    echo "Errore: comando richiesto '$cmd' non trovato."
+    exit 1
+  }
+done
+
+partitions=$(lsblk -rn -o NAME,FSTYPE,MOUNTPOINT,SIZE | awk \
+  '$2 != "" && $2 != "swap" && $2 != "vfat" && $2 != "efi" && $3 != "/" && $3 != "/boot" && $3 != "/var" && $3 != "[SWAP]" {print $1, $2, $4, $3}')
+if [[ -z "$partitions" ]]; then
+  dialog --msgbox "Nessuna partizione esterna valida trovata." 8 60
+  exit 1
+fi
+
 menu_options=()
-while read -r name fstype size mountpoint; do
+while read -r name fstype size mountpoint_path; do
   desc="$fstype - $size"
-  if [ -n "$mountpoint" ]; then
-    desc="$desc (Montato in $mountpoint)"
-  else
-    desc="$desc (Non montato)"
-  fi
+  [[ -n "$mountpoint_path" ]] && desc+=" (Montato in $mountpoint_path)" || desc+=" (Non montato)"
   menu_options+=("/dev/$name" "$desc")
 done <<< "$partitions"
 
-TARGET_DEV=$(dialog --clear --title "AriaOS - Restore Home" \
-        --menu "Scegli la partizione contenente il backup:" 15 70 6 \
-        "${menu_options[@]}" \
-        3>&1 1>&2 2>&3)
-
-if [ -z "$TARGET_DEV" ]; then
-  clear
-  echo "Operazione annullata dall'utente."
-  exit 0
-fi
-
-# Gestione mount
-MOUNT_POINT=$(lsblk -rn -o MOUNTPOINT "$TARGET_DEV")
-TEMP_MOUNT=0
-
-if [ -z "$MOUNT_POINT" ]; then
-  MOUNT_POINT=$(mktemp -d /tmp/ariaos-restore-mnt.XXXXXX)
-  if ! mount "$TARGET_DEV" "$MOUNT_POINT"; then
-    dialog --msgbox "Impossibile montare $TARGET_DEV." 8 50
-    rm -rf "$MOUNT_POINT"
-    exit 1
-  fi
-  TEMP_MOUNT=1
-fi
-
-BACKUP_FILE="$MOUNT_POINT/ariaos_home.btrfs.zst"
-
-if [ ! -f "$BACKUP_FILE" ]; then
-  dialog --msgbox "File di backup non trovato!\nNessun file in: $BACKUP_FILE" 8 60
-  [ $TEMP_MOUNT -eq 1 ] && umount "$MOUNT_POINT" && rm -rf "$MOUNT_POINT"
-  exit 1
-fi
-
-# Verifica distruttiva
-dialog --yesno "ATTENZIONE!\nQuesta operazione sovrascriverà l'attuale cartella /var/home con il backup.\n\nSei sicuro di voler procedere?" 10 60
-if [ $? -ne 0 ]; then
-  [ $TEMP_MOUNT -eq 1 ] && umount "$MOUNT_POINT" && rm -rf "$MOUNT_POINT"
+if ! TARGET_DEV=$(dialog --clear --title "AriaOS - Restore Home" \
+  --menu "Scegli la partizione contenente il backup:" 15 70 6 \
+  "${menu_options[@]}" 3>&1 1>&2 2>&3); then
   clear
   echo "Operazione annullata."
   exit 0
 fi
 
-# Rimuovi vecchio restore pendente se presente
-btrfs subvolume delete /var/home-backup >/dev/null 2>&1 || true
+MOUNT_POINT=$(lsblk -nr -o MOUNTPOINT "$TARGET_DEV" | head -n 1)
+if [[ -z "$MOUNT_POINT" ]]; then
+  MOUNT_POINT=$(mktemp -d /tmp/ariaos-restore-mnt.XXXXXX)
+  mount "$TARGET_DEV" "$MOUNT_POINT"
+  TEMP_MOUNT=1
+fi
 
-FILE_SIZE=$(stat -c%s "$BACKUP_FILE")
-
-set -o pipefail
-if ! ( pv -n -s "$FILE_SIZE" "$BACKUP_FILE" | zstdcat 2>/dev/null | btrfs receive /var/ >/dev/null 2>&1 ) 2>&1 | dialog --backtitle "AriaOS - Restore" --title "Importazione" --gauge "Decompressione e Ripristino (Zstd -> Btrfs)...\nSorgente: $BACKUP_FILE\nAttendere il completamento." 10 70; then
-  dialog --backtitle "AriaOS - Restore" --title "Errore" --msgbox "Si è verificato un errore durante l'importazione (btrfs receive fallito o stream interrotto)." 8 50
-  [ $TEMP_MOUNT -eq 1 ] && umount "$MOUNT_POINT" && rm -rf "$MOUNT_POINT"
+BACKUP_FILE="$MOUNT_POINT/ariaos_home.btrfs.zst"
+if [[ ! -s "$BACKUP_FILE" ]]; then
+  dialog --msgbox "Backup non trovato o vuoto:\n$BACKUP_FILE" 8 70
   exit 1
 fi
-set +o pipefail
 
-dialog --backtitle "AriaOS - Restore" --infobox "Flusso ricevuto con successo. Preparazione della nuova home..." 5 60
-
-# Swap della home
-# Evitiamo 'btrfs subvolume delete' perché fallisce (e fa crashare lo script per via del set -e) 
-# se la home contiene subvolumi annidati (es. Podman/Distrobox).
-OLD_HOME="/var/home.old_$(date +%s)"
-if [ -e /var/home ]; then
-  mv /var/home "$OLD_HOME" >/dev/null 2>&1 || true
+if ! dialog --yesno \
+  "ATTENZIONE!\nLa home corrente verrà sostituita. Una copia verrà conservata in /var/home.old_TIMESTAMP.\n\nProcedere?" \
+  11 70; then
+  clear
+  echo "Operazione annullata."
+  exit 0
 fi
 
-# Se /var/home esiste ancora (es. se era un mountpoint impossibile da rinominare)
-if [ -e /var/home ]; then
-  # Svuotiamo il più possibile e usiamo reflink per ripristinare i dati
-  find /var/home -mindepth 1 -delete 2>/dev/null || true
-  cp -a --reflink=auto /var/home-backup/. /var/home/ >/dev/null 2>&1 || true
-else
-  # Mv ha funzionato, la destinazione è libera. Facciamo uno snapshot RW pulito.
-  if ! btrfs subvolume snapshot /var/home-backup /var/home >/dev/null 2>&1; then
-     dialog --backtitle "AriaOS - Restore" --title "Errore Critico" --msgbox "Impossibile rendere read-write la home. Il sistema potrebbe essere in uno stato inconsistente." 8 60
-     mv "$OLD_HOME" /var/home >/dev/null 2>&1 || true
-     exit 1
+for path in "$RECEIVED" "$RESTORED"; do
+  if btrfs subvolume show "$path" >/dev/null 2>&1; then
+    btrfs subvolume delete "$path" >/dev/null
+  elif [[ -e "$path" ]]; then
+    dialog --title "Errore" --msgbox "$path esiste ma non è un subvolume gestibile." 8 70
+    exit 1
   fi
+done
+
+file_size=$(stat -c%s "$BACKUP_FILE")
+if ! (pv -n -s "$file_size" "$BACKUP_FILE" | zstdcat | btrfs receive /var/) \
+  2>&1 | dialog --backtitle "AriaOS - Restore" --title "Importazione" \
+  --gauge "Verifica e ricezione dello stream Btrfs..." 10 70; then
+  dialog --title "Errore" --msgbox "Stream non valido o ricezione Btrfs fallita." 8 60
+  exit 1
 fi
 
-# Pulizia
-dialog --backtitle "AriaOS - Restore" --infobox "Pulizia in corso..." 5 50
-btrfs subvolume delete /var/home-backup >/dev/null 2>&1 || true
-
-if [ $TEMP_MOUNT -eq 1 ]; then
-  umount "$MOUNT_POINT"
-  rm -rf "$MOUNT_POINT"
+if ! btrfs subvolume show "$RECEIVED" >/dev/null 2>&1; then
+  dialog --title "Errore" --msgbox "Il backup non contiene il subvolume atteso home-backup." 8 70
+  exit 1
 fi
 
-dialog --backtitle "AriaOS - Restore" --title "Completato" --msgbox "Ripristino completato con successo!\n\nÈ necessario riavviare il sistema affinché tutte le applicazioni e i servizi leggano la nuova home." 10 60
+btrfs subvolume snapshot "$RECEIVED" "$RESTORED" >/dev/null
+btrfs subvolume show "$RESTORED" >/dev/null
+
+old_home="/var/home.old_$(date +%s)"
+if ! mv /var/home "$old_home"; then
+  dialog --title "Errore" --msgbox "Impossibile preservare la home corrente; nessun dato è stato sostituito." 8 70
+  exit 1
+fi
+if ! mv "$RESTORED" /var/home; then
+  mv "$old_home" /var/home || true
+  dialog --title "Errore critico" --msgbox "Attivazione fallita. È stato tentato il rollback della home originale." 9 70
+  exit 1
+fi
+ACTIVATED=1
+
+dialog --title "Completato" --msgbox \
+  "Ripristino completato.\nHome precedente: $old_home\n\nRiavviare prima del login grafico." 10 70
 clear

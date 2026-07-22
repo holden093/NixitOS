@@ -44,6 +44,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Static validation
+        run: ./scripts/validate.sh
+
       - name: Maximize build space
         uses: ublue-os/remove-unwanted-software@v9
 
@@ -82,6 +85,9 @@ jobs:
           oci: false
           extra-args: |
             --network=host
+
+      - name: Validate built image
+        run: ./scripts/validate/image.sh "${IMAGE_NAME}:${DEFAULT_TAG}"
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3

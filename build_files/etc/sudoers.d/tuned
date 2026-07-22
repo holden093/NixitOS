@@ -1,2 +1,2 @@
 # AriaOS: Allow dynamic tuned profile switching without password for DAW launcher
-ALL ALL=(ALL) NOPASSWD: /usr/sbin/tuned-adm profile latency-performance, /usr/sbin/tuned-adm profile balanced-battery
+%audio ALL=(root) NOPASSWD: /usr/sbin/tuned-adm profile *

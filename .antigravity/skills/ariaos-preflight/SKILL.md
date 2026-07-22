@@ -21,20 +21,24 @@ The CI runner on GitHub has subtle differences from the local environment (packa
 
 ```bash
 # Run from the repo root:
-./.antigravity/skills/ariaos-preflight/scripts/preflight.sh
+./scripts/preflight.sh
 ```
 
 This script:
-1. Checks which files are staged/unstaged
-2. Runs `podman build -f Containerfile -t ariaos .`
-3. Reports pass/fail with exit code
+1. Runs `scripts/validate.sh`, including mocked non-destructive operational tests.
+2. Reports image-affecting changes.
+3. Builds the complete image with Podman.
+4. Runs the reusable `scripts/validate/image.sh` image contract, also used by CI.
+5. Removes the test image unless `ARIAOS_KEEP_PREFLIGHT_IMAGE=1` is set.
 
 ## Pass Criteria
 
 - `podman build` exits 0
 - All Containerfile steps complete
 - `bootc container lint` shows no new errors
-- The built image contains the expected packages (`rpm -q freerdp-libs` returns the custom `.ariaos` build)
+- The built image contains the custom `.ariaos` FreeRDP package.
+- Removed local-model packages and paths are absent.
+- Required services, masks, sudoers modes, storage declarations, and build-only path cleanup match the image contract.
 
 ## When It Fails
 
@@ -47,10 +51,10 @@ This script:
 
 ```
 $ vim Containerfile
-$ ./skills/ariaos-preflight/scripts/preflight.sh
+$ ./scripts/preflight.sh
   → Build failed: ffmpeg-libs conflicts with libavcodec-free
 $ vim Containerfile   # fix the conflict
-$ ./skills/ariaos-preflight/scripts/preflight.sh
+$ ./scripts/preflight.sh
   → Build PASSED ✅
 $ git push
 ```

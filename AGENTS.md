@@ -1,147 +1,127 @@
-# AriaOS - Agent Instructions
+# AriaOS Agent Contract
 
-This file contains foundational mandates and context for any AI agent working on the AriaOS codebase.
+This file defines the non-negotiable engineering rules for changes to AriaOS. User-facing operation and installation belong in `README.md`; do not duplicate that material here.
 
-## 1. Architectural Paradigm
-- **System Type:** Fedora Silverblue derivative using `bootc` and `blue-build`.
-- **GitOps Flow:** The system is immutable. ALL system-level changes (packages, services, configuration files) MUST be made by editing the `Containerfile` or placing files in the `build_files/` directory. Do not instruct the user to run `dnf` or `rpm-ostree install` on their live system unless it's for temporary testing.
+## 1. System model
 
-## 2. Hardware Constraints & Asymmetric GPU Setup
-This specific configuration is bound to the user's local hardware:
-- **Primary GPU & Compute:** Intel Arc (Lunar Lake). Packages like `intel-compute-runtime` and `intel-level-zero` are critical for everyday acceleration and base LLM inference via SYCL/Vulkan.
-- **On-Demand eGPU:** NVIDIA GPU via Thunderbolt. 
-  - **CRITICAL RULE:** NVIDIA kernel modules (`nvidia`, `nvidia_uvm`, `nouveau`, `nvidia_modeset`, `nvidia_drm`) MUST remain blacklisted via `install <module> /bin/false` in `/etc/modprobe.d/blacklist-nvidia.conf`. Do not use `alias <module> off` as it breaks explicit `--ignore-install` loading.
-  - **Usage:** Activated via `egpu-up.sh`. Loads the full stack (`nvidia`, `nvidia_uvm`, `nvidia_modeset`, `nvidia_drm`) and sets wide-open permissions (`0666`) to allow both compute and display server (Wayland/GNOME) to hook the GPU.
-  - **Disconnection (Cold-Unplug Required):** Because `egpu-up.sh` loads DRM modules and allows the display server to capture the device, the eGPU CANNOT be hot-unplugged safely. The user MUST log out or reboot to release the GPU before running `egpu-down.sh` or disconnecting.
+- AriaOS is a Fedora Silverblue 44 derivative built with `bootc` and `blue-build` for one specific machine.
+- The deployed OS is immutable. Persistent system changes must be represented in this repository.
+- Use `dnf5` during container builds. Do not use build-time `rpm-ostree install`, `override`, or `cleanup` commands.
+- Never recommend live `dnf` or `rpm-ostree install` as a persistent solution. Temporary diagnostics must be identified explicitly as temporary.
+- The repository is GPL-3.0; `LICENSE` is authoritative.
 
-## 3. Optimization Goals (AI/LLM Focus)
-- **Minimalism:** Keep the base image as small as possible. 
-  - `glibc-all-langpacks` is explicitly removed to save space, but `glibc-langpack-it` and `langpacks-it` must be kept to support the user's primary locale (Italian) alongside English.
-  - Prefer Flatpaks or Distroboxes for GUI applications not explicitly requested in the base image.
-  - **CRITICAL RULE:** Flatpaks MUST NEVER be used for "critical" system applications (e.g. Backup tools, core system utilities). Such applications MUST always be installed as native RPMs in the base image.
-    - **EXCEPTION:** *Pika Backup* is explicitly authorized to be installed via Flatpak (`org.gnome.World.PikaBackup`) despite being a critical backup tool, as approved by the system administrator to prioritize its native GNOME GTK aesthetic and functionality.
-- **RAM Efficiency:** The system has 32GB of physical RAM, primarily intended for loading large weights in `llama.cpp`. 
-  - zRAM is explicitly configured to 16GB with the `zstd` algorithm to compress OS/background tasks and prevent OOM without stealing physical RAM from the model. Do not alter this balance without explicit user confirmation.
-- **CPU & Storage Efficiency:** The NMI watchdog is disabled (`nowatchdog`) to allow deeper C-states. The Btrfs root filesystem is explicitly mounted with `compress=zstd:1` via `bootc` kargs (`build_files/usr/lib/bootc/kargs.d/battery.toml`) to reduce write amplification and save battery.
-  - **BTRFS Health (btrfsmaintenance):** To proactively prevent bit-rot and ensure metadata integrity over time, the `btrfsmaintenance` package is integrated in the base image. Systemd timers (`btrfs-scrub.timer` and `btrfs-balance.timer`) are explicitly enabled to perform regular asynchronous checks in the background.
+## 2. Ownership boundaries
 
-## 4. Disk Encryption & TPM 2.0 Security
-- **LUKS2 and TPM2 Bindings:** AriaOS supports modern LUKS2 disk encryption bound to TPM 2.0 via `systemd-cryptenroll`.
-- **Declarative Zero-Config Paradigm:** To uphold the atomic, immutable GitOps philosophy of `bootc`, manual modification of `/etc/crypttab` on the host is strongly discouraged. The system relies on the **Discoverable Partitions Specification (DPS)**. Under GPT, `systemd-gpt-auto-generator` automatically discovers the root LUKS2 volume at boot, reads the TPM2 token from the LUKS2 JSON metadata header, and unlocks it without host state modifications.
-- **Dracut Configuration:** Because `bootc` builds are performed inside containers where no TPM is present, `crypt` and `tpm2-tss` dracut modules are explicitly forced in [tpm2.conf](file:///var/home/kevin/GIT/AriaOS/build_files/etc/dracut.conf.d/tpm2.conf) to guarantee that they are packaged into the initramfs.
-- **TPM PCR Strategy:**
-  - Standard binding should use **PCR 7** (Secure Boot state) and optionally **PCR 0** (Firmware).
-  - **AVOID PCR 8 and 9** on `bootc` systems, as these measure kernel command lines and initramfs content. Since `bootc update` pulls new images with updated kernels and initramfs, binding to PCR 8/9 would trigger a recovery passphrase prompt on every single system upgrade.
+| Location | Responsibility |
+|---|---|
+| `Containerfile` | Visible stage and cache orchestration |
+| `build_files/` | Desired final filesystem state |
+| `scripts/build/` | Focused build-time mutations mounted from `build-tools` |
+| `versions/external-tools.env` | Pinned upstream versions and SHA-256 digests |
+| `scripts/validate/` | Static checks and reusable image contract |
+| `tests/` | Isolated, non-destructive operational tests |
 
+Build helpers must not remain in the final image. Keep separate cache boundaries for package installation, service configuration, NVIDIA policy, and external tools. Update versions and checksums together.
 
-## 5. Empirical Validation & Testing Mandate (Strict Protocol)
-- **Test Before Act:** NEVER propose a modification without first performing empirical tests to verify the actual state of the system. Do not make naive assumptions about standard configurations.
-- **Verification:** Always use tools like `lsmod`, `systemctl`, `lsblk`, or `--dry-run` flags (e.g., for `dracut` or package managers) to cross-reference the real system state before acting.
-- **Post-Fix Validation:** Every change must be rigorously validated post-implementation to guarantee syntactical correctness and ensure no regressions were introduced.
-- **CRITICAL TIMEOUT RULE:** If a command or build (like `podman build`) goes into timeout waiting for a permission prompt, it means the user is away from the computer. Do NOT assume the command succeeded, and do NOT bypass the verification step. You must STOP, report the timeout, and wait for the user. NEVER take anything for granted.
+Every structural or behavioral change must update both this contract and `README.md` when it affects users.
 
-## 6. Documentation & Maintenance
-- **Active Skills:** Use the `ariaos-optimizer` skill to periodically check system efficiency, and the `ariaos-posture-check` skill to verify alignment with this repo's desired state.
-- **Always-Sync Docs:** Every structural change MUST be reflected in both `AGENTS.md` (for the agent) and `README.md` (for the user).
-- **Update Frequency:** Documentation is not static; update it whenever a package is added/removed or a service is tuned.
+## 3. Hardware invariants
 
-## 7. Project License
-- **License Type:** GNU General Public License v3.0 (GPL-3.0).
-- **Enforcement:** Ensure any new files or major contributions respect the copyleft nature of the GPL v3.0. The `LICENSE` file in the root directory is the source of truth.
+### Intel Arc
 
-## 8. Backup & Restore Capabilities
-AriaOS implements a two-tier backup architecture:
-- **Daily Incremental Backups (Time Machine-like):** The primary daily backup solution is **Pika Backup** (BorgBackup under the hood). This provides browsable, incremental backups over the network (e.g., to a TrueNAS SMB share). Since Pika Backup is heavily GNOME-integrated, an exception exists to install it via Flatpak (`org.gnome.World.PikaBackup`).
-- **Bare-Metal Disaster Recovery (TUI Scripts):** AriaOS provides native interactive TUI scripts (`backup` and `restore`) located in `build_files/usr/bin/` to safely export and import the entire `/var/home` Btrfs subvolume to USB drives.
-- **Methodology (Bare-Metal):** They rely on Btrfs `send` and `receive` streams compressed via `zstd`, alongside `dialog` and `pv` for the UI. Future agents modifying the storage layout or subvolume naming scheme must ensure these scripts are updated to reflect those changes.
-- **Dynamic Subvolumes (GitOps Storage):** Heavy data like LLM weights and Steam games are excluded from the `/var/home` backup. This is achieved declaratively via `systemd-tmpfiles` (`build_files/usr/lib/tmpfiles.d/ariaos-subvols.conf`), which automatically creates native Btrfs subvolumes in `/var` (`/var/llms`, `/var/games`) and exposes them via symlinks in the user's home directory (`~/LLMs` → `/var/llms`). GGUF model files live under `~/LLMs/GGUF` (resolves to `/var/llms/GGUF`). Since Btrfs snapshots are not recursive, `backup` only backs up the symlinks (and Pika Backup can be configured to exclude them).
+- Intel Arc Lunar Lake is the primary GPU.
+- Keep `intel-compute-runtime` and `intel-level-zero` in the base image.
+- OpenCL/Level Zero readiness does not authorize adding a model engine, model storage, chatbot, or local-model service.
 
-## 9. Low-Latency Audio Optimizations (Dynamic Tuning)
-- **Kernel Tuning:** To maximize battery life and allow deep C-states on Intel Lunar Lake, AriaOS explicitly avoids boot-time realtime kernel arguments like `threadirqs` and `preempt=full`. The system relies on the standard Fedora kernel scheduling, which provides sufficiently low latencies out-of-the-box via PipeWire. Do NOT replace the kernel with third-party RT kernels (like CachyOS) as it breaks pre-compiled NVIDIA drivers.
-- **Dynamic DAW Tuning:** When launching a DAW (e.g., Reaper), users should use the `ariaos-daw-launcher` wrapper script. This script dynamically switches the system to the `latency-performance` tuned profile via `sudo` (allowed passwordless via `/etc/sudoers.d/tuned`) for the duration of the session, and restores `balanced-battery` upon exit.
-- **Priority Management:** `realtime-setup` is installed. Users MUST be added to the `realtime` and `audio` groups to take advantage of PAM `limits.d` capabilities.
+### NVIDIA eGPU
 
-## 10. Local LLM Architecture (AriaOS GGUF Engine)
-- **Engine Management:** The local `llama.cpp` container is managed directly via `podman compose` using the compose definition at `/usr/share/aria-gguf-engine/compose.yaml`. Use `podman compose -f /usr/share/aria-gguf-engine/compose.yaml up -d` to start the engine.
-- **Engine Definition:** The GGUF engine compose and router config are maintained in this repo under `build_files/usr/share/aria-gguf-engine/` and installed to `/usr/share/aria-gguf-engine/`. The compose uses the upstream `ghcr.io/ggml-org/llama.cpp:server-intel` image directly — no local Containerfile needed. Runtime state only belongs under `/var` or user state directories; the engine must not depend on ad-hoc directories in the user's home.
-- **Model Storage:** All downloaded models and configs must reside under `/var/llms/GGUF` (reachable via `~/LLMs/GGUF` thanks to the `~/LLMs` → `/var/llms` symlink). This guarantees they survive OS image updates and avoid bloating standard `/var/home` backups.
-- **KV Cache Budget:** `--cache-type-k q8_0 --cache-type-v q8_0` is set in the compose `command:`. This halves the KV cache VRAM footprint, keeping 1M-context models within the 10–15 GiB budget. Without it, a 1M-context 2B model would consume ~16.8 GiB instead of ~10.8 GiB.
-- **Registered Models (in config.ini):**
-  - `qwen3-4b-instruct-2507-ud-q6xl-32k` — 4B params, Q6_K_XL, 32k context (~3.5 GB weights)
-  - `soren-1-small-f16-1m` — 2B params (Qwen3.5-based), F16, 1M context (~3.8 GB weights). Hybrid attention: 6/24 full-attn layers. Requires Q8_0 KV cache to fit 1M context within 10–15 GiB VRAM. Uses `--no-jinja --chat-template chatml` to work around a Jinja lexer issue with `!` characters in the baked-in system prompt.
-  - `gemma4-e4b-it-ud-q8xl-32k` — 4B params, Q8_K_XL, 32k context (model file not yet downloaded)
+- NVIDIA is on-demand only.
+- The following modules must have exact `install <module> /bin/false` rules in `/etc/modprobe.d/blacklist-nvidia.conf`:
+  - `nvidia`
+  - `nvidia_uvm`
+  - `nouveau`
+  - `nvidia_modeset`
+  - `nvidia_drm`
+- Do not replace these rules with `alias <module> off`; explicit `modprobe --ignore-install` activation depends on the current design.
+- `egpu-up.sh` must load `nvidia`, `nvidia_modeset`, `nvidia_uvm`, and `nvidia_drm`, then permit compute and Wayland access to the device nodes.
+- Treat the eGPU as cold-unplug only after activation. The user must log out or reboot before unloading or disconnecting it if the display server acquired the device.
+- Do not replace Fedora's kernel with a third-party realtime kernel; precompiled NVIDIA compatibility is required.
 
-## 11. Local Terminal Chatbot (aria)
+## 4. Resource and storage invariants
 
-### Purpose
-`aria` is a terminal-based AI chatbot integrated into the AriaOS base image. It connects via SSE streaming to the local llama.cpp inference container (`aria-gguf-engine` on `http://127.0.0.1:8080/v1`) and provides a conversational REPL with OpenAI-compatible function calling.
+- Keep Italian and English locale support. `glibc-all-langpacks` is removed; `glibc-langpack-it` and `langpacks-it` stay installed.
+- Keep zRAM at 16 GB using `zstd`. Do not change it without explicit user approval.
+- Keep the NMI watchdog disabled and Btrfs root compression at `zstd:1` through bootc kernel arguments.
+- Keep `btrfsmaintenance` and the scrub/balance timers enabled.
+- `/var/games` is a Btrfs subvolume declared through tmpfiles and writable through the declarative `aria-games` group. Never hardcode a personal user or home path.
+- Prefer Flatpak or Distrobox for nonessential GUI applications.
+- Critical system and recovery utilities must be native RPMs. Pika Backup is the sole approved critical Flatpak exception.
 
-### Location
-`build_files/usr/bin/aria` is the single canonical command and the only chatbot entrypoint maintained in this repository. Do not add compatibility aliases or duplicate wrapper commands unless the user explicitly requests them.
+## 5. Security and boot invariants
 
-### Runtime Dependencies
-- **System venv:** `/usr/share/aria/venv` (created at build time in the Containerfile with `python3 -m venv --system-site-packages`, inheriting system `requests` and `psutil`). The only pip dependency installed in this venv is `ddgs` (DuckDuckGo search).
-- **Containerfile addition:** `python3-pip` RPM, plus a dedicated RUN step that creates the venv and runs `pip install ddgs`.
-- **Python imports used:** `requests`, `json`, `datetime`, `os`, `sys`, `signal`, `textwrap`, `shutil`, `subprocess`, `random`, `re`, `pathlib`, `psutil` (lazy-imported in `system_info()`), `ddgs` (DuckDuckGo, try/except fallback to `duckduckgo_search`).
+- Root encryption uses LUKS2 and TPM2 through the Discoverable Partitions Specification; avoid persistent manual `/etc/crypttab` edits.
+- Force the `crypt` and `tpm2-tss` dracut modules because image builds have no TPM device.
+- Standard TPM enrollment uses PCR 7 and may optionally include PCR 0.
+- Do not recommend PCR 8 or 9: bootc kernel and initramfs updates would invalidate those measurements.
+- NVIDIA policy and TPM modules must be applied before the final initramfs regeneration.
 
-### Environment Variables (no hardcoded values)
-All user/host-specific values are resolved dynamically or via environment variables:
-| Variable | Default | Purpose |
-|---|---|---|
-| `LLAMA_API` | `http://127.0.0.1:8080/v1` | llama.cpp OpenAI-compatible endpoint |
-| `ARIA_MODEL` | auto-detected from `/v1/models` (loaded `32k` profiles are preferred, then other loaded models), fallback `qwen3-4b-instruct-2507-ud-q6xl-32k`. | Model to use |
-| `ARIA_COMPOSE` | `/usr/share/aria-gguf-engine/compose.yaml` (with repo fallback during development). | Compose file for auto-starting the engine |
-| `ARIA_WORK_DIR` | `os.cwd()` | Write-allowed directory for `write_file()` |
+## 6. Operational components
 
-**Hardcoding rule:** NEVER add user-specific data (hostname, CPU model, RAM size, hardcoded paths). Always use `os.uname().nodename`, `psutil.cpu_count()`, `psutil.virtual_memory().total`, `os.getenv(...)` with sensible defaults, or `Path.home()`.
+### Backup and restore
 
-### Architecture
+- Pika Backup provides daily incremental backups.
+- `backup` and `restore` provide bare-metal `/var/home` recovery through Btrfs send/receive streams compressed with zstd.
+- Preserve interruption cleanup, partial-file removal, stream validation, previous-home retention, and activation rollback.
+- Any storage-layout or subvolume-name change must update both scripts and their operational tests.
 
-#### Streaming Engine
-`call_llm_stream(messages, tools, max_tokens=2048)` sends `stream: true` to the API and yields typed event dicts:
-- `{"type": "reasoning", "text": "..."}` — Gemma4 thinking tokens (shown in gray, natural terminal wrapping)
-- `{"type": "content", "text": "..."}` — response tokens (streamed to stdout)
-- `{"type": "done", "reason": "stop"|"tool_calls"|"length", "usage": {...}, "timings": {...}, "tool_calls": [...]}` — final event with stats
+### Audio
 
-SSE parsing handles `data:` lines, `[DONE]` marker, and JSON decode errors gracefully. Tool calls are accumulated across streaming chunks (indexed by `tc["index"]`).
+- Avoid permanent `threadirqs`, `preempt=full`, or equivalent boot tuning.
+- `ariaos-daw-launcher` must activate `latency-performance` only for the child process and restore the previously active profile on every exit path.
+- Passwordless tuned profile switching is limited to the `audio` group. Realtime operation also requires the `realtime` group.
 
-#### Tool Calling Loop
-Each user message enters a `while tool_rounds < 5 and not done_final` loop:
-1. Stream the API response
-2. If `done` with `reason: "tool_calls"` → execute tool(s), append results to messages, continue loop
-3. If `done` with `reason: "stop"` → display content, show stats, set `done_final = True`
-4. Error handling: ConnectionError, HTTP errors, timeout
+### Kubernetes
 
-#### Tools (5 total)
-All defined in the `TOOLS` list (OpenAI function-calling schema) and `TOOL_IMPL` dict. Model sees them in every request.
+- The base image contains Fedora's `kubernetes1.36-client`, Helm, Bash completion, Minikube, `kubectx`, and `kubens`.
+- Minikube and kubectx/kubens use pinned, checksummed upstream artifacts.
+- Generate system-wide Bash completion for kubectl and Minikube.
+- Use rootless Podman for Minikube. Do not add Docker or an always-on Kubernetes service solely for local development.
 
-1. **`web_search(query)`** — DuckDuckGo via `ddgs` library. Max 5 results, snippet truncated at 200 chars.
-2. **`system_info(category)`** — Uses `psutil` for CPU %, RAM, swap, disk usage, processes (top 10 by RAM). GPU detection via `lsmod | grep nvidia_uvm`.
-3. **`read_file(path)`** — Resolves `~`, validates existence/is_file. Limits: 1 MB size, 10k chars read. UTF-8 with error replacement.
-4. **`write_file(path, content)`** — Ensures `resolve()`d path starts with `ARIA_WORK_DIR.resolve()`. Creates parent dirs. Blocks path traversal (`../`, `~/`, `/tmp/`).
-5. **`run(command)`** — Whitelisted read-only shell commands. Blocks pipes, redirects, sudo, destructive operations. 15s timeout, output capped at 5k chars.
+## 7. Empirical workflow
 
-#### Reasoning Display
-When `show_reasoning` is True (toggled via `/think`), thinking tokens print in gray with natural terminal wrapping. A `🧠` prefix marks the thinking. When content tokens arrive, the thinking display naturally flows into the response with a visual gap. No `\r` tricks — the terminal handles wrapping.
+1. Inspect the repository and, when relevant, the real system state before proposing a change.
+2. Use read-only evidence such as `lsmod`, `systemctl`, `lsblk`, package queries, or supported dry-run modes. Do not assume conventional Fedora state applies unchanged.
+3. Implement persistent changes declaratively.
+4. Run the smallest relevant checks during development.
+5. After any image-affecting change, run the complete preflight and do not publish without a pass.
 
-#### Interaction Features
-- `/think` — toggle thinking visibility
-- `/model` — list available models from API
-- `/new` — clear conversation history
-- Multiline input: `"""..."""` syntax for pasting blocks
-- Auto-start: if engine unreachable, runs `podman compose up -d` with configurable compose path
-- History persistence: JSON file at `~/.local/share/aria-history.json` (last 100 messages)
-- Exit messages: randomized from `EXIT_MSGS` list
+If a build or command waits for an approval prompt and times out, stop. Do not infer success or bypass validation.
 
-#### Model Selection and Local Memory Budget
-`detect_model()` must prefer loaded `32k` profiles over `128k` profiles. The laptop GGUF engine is intended to stay within an approximate 10 GiB shared GPU-memory budget; long-context work belongs on a remote server. Do not expose or auto-select 128k laptop profiles unless the user explicitly accepts the memory and latency cost.
+## 8. Required validation
 
-#### System Prompt
-Dynamically built by `get_system_prompt()` — injects `os.uname().nodename`, kernel version, CPU count (`psutil.cpu_count()`), RAM (`psutil.virtual_memory().total`). Personality: "Aria", Italian sysadmin, friendly/competent. Rules: proactive (try common paths first), never conservative (always search fresh), offer to save structured output.
+`./scripts/validate.sh` must pass. It covers:
 
-### Testing Mandate
-Any modification must pass:
-1. Syntax check (`py_compile`)
-2. Non-interactive smoke test against running API (verify tool calling, web search, system_info)
-3. No hardcoded user/host-specific values (grep for hostname, CPU model, RAM size, fixed paths)
-4. The Containerfile must build the ctx stage without errors
+- Bash syntax and ShellCheck when available;
+- sudoers parsing;
+- policy scans for personal paths, retired model components, legacy build mutations, and NVIDIA rules;
+- isolated operational tests for backup cleanup, restore rejection and rollback, DAW profile restoration, and eGPU sequencing;
+- `git diff --check`.
+
+After changes to `Containerfile`, `build_files/`, `scripts/build/`, or external versions, `./scripts/preflight.sh` must also pass. It performs the full Podman build and runs `scripts/validate/image.sh`, which verifies:
+
+- custom FreeRDP packages;
+- Intel compute and Kubernetes tools;
+- completion files;
+- required enabled and masked units;
+- sudoers modes;
+- sysusers/tmpfiles consistency;
+- NVIDIA module policy;
+- absence of retired local-model and build-only paths.
+
+GitHub Actions must run the same image contract after its Buildah build.
+
+## 9. Maintenance skills
+
+- Use `ariaos-optimizer` for periodic efficiency reviews.
+- Use `ariaos-posture-check` when available to audit repository alignment.
+- Use the repository preflight skill for all image-affecting work.

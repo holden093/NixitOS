@@ -1,8 +1,0 @@
-.git/
-output/
-*.swp
-*~
-.DS_Store
-build_files/usr/share/plymouth/themes/ariaos/*.png
-.claude/agents/
-.claude/settings.local.json

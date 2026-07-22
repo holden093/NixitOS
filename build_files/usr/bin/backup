@@ -1,114 +1,111 @@
 #!/usr/bin/env bash
-set -e
+set -Eeuo pipefail
 
-# Controllo stringente sui privilegi di root
-if [ "$EUID" -ne 0 ]; then
-    echo "❌ Errore: Questo script deve essere eseguito come root o con sudo."
-    exit 1
+SNAPSHOT=/var/home-backup
+MOUNT_POINT=
+TEMP_MOUNT=0
+BACKUP_FILE=
+PARTIAL_FILE=
+
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+
+  if btrfs subvolume show "$SNAPSHOT" >/dev/null 2>&1; then
+    btrfs subvolume delete "$SNAPSHOT" >/dev/null 2>&1 || true
+  fi
+  if (( TEMP_MOUNT == 1 )) && mountpoint -q "$MOUNT_POINT"; then
+    umount "$MOUNT_POINT" || true
+  fi
+  if (( TEMP_MOUNT == 1 )) && [[ -n "$MOUNT_POINT" ]]; then
+    rmdir "$MOUNT_POINT" 2>/dev/null || true
+  fi
+  if [[ -n "$PARTIAL_FILE" && -f "$PARTIAL_FILE" ]]; then
+    rm -f -- "$PARTIAL_FILE"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT INT TERM
+
+if (( EUID != 0 )); then
+  echo "❌ Errore: questo script deve essere eseguito come root o con sudo."
+  exit 1
 fi
 
-# Verifica dipendenze
-for cmd in btrfs dialog zstd pv lsblk; do
-  if ! command -v $cmd &> /dev/null; then
-    echo "Errore: comando richiesto '$cmd' non trovato. Assicurati che sia installato."
+for cmd in btrfs dialog zstd pv lsblk mount mountpoint umount; do
+  command -v "$cmd" >/dev/null || {
+    echo "Errore: comando richiesto '$cmd' non trovato."
     exit 1
-  fi
+  }
 done
 
-# Verifica che /var/home sia un subvolume btrfs
-if ! btrfs subvolume show /var/home &> /dev/null; then
-  dialog --msgbox "Errore: /var/home non risulta essere un subvolume Btrfs valido." 8 50
+if ! btrfs subvolume show /var/home >/dev/null 2>&1; then
+  dialog --msgbox "Errore: /var/home non risulta essere un subvolume Btrfs valido." 8 60
   exit 1
 fi
 
-# Trova partizioni potenzialmente usabili (esclude quelle di sistema)
-partitions=$(lsblk -rn -o NAME,FSTYPE,MOUNTPOINT,SIZE | awk '$2 != "" && $2 != "swap" && $2 != "vfat" && $2 != "efi" && $3 != "/" && $3 != "/boot" && $3 != "/var" && $3 != "[SWAP]" {print $1, $2, $4, $3}')
-
-if [ -z "$partitions" ]; then
-  dialog --msgbox "Nessuna partizione esterna valida (ext4/btrfs/exfat) trovata.\nAssicurati di aver collegato un disco USB." 8 60
+partitions=$(lsblk -rn -o NAME,FSTYPE,MOUNTPOINT,SIZE | awk \
+  '$2 != "" && $2 != "swap" && $2 != "vfat" && $2 != "efi" && $3 != "/" && $3 != "/boot" && $3 != "/var" && $3 != "[SWAP]" {print $1, $2, $4, $3}')
+if [[ -z "$partitions" ]]; then
+  dialog --msgbox "Nessuna partizione esterna valida trovata.\nCollega un disco USB e riprova." 8 60
   exit 1
 fi
 
-# Costruisci le opzioni per il menu dialog
 menu_options=()
-while read -r name fstype size mountpoint; do
+while read -r name fstype size mountpoint_path; do
   desc="$fstype - $size"
-  if [ -n "$mountpoint" ]; then
-    desc="$desc (Montato in $mountpoint)"
-  else
-    desc="$desc (Non montato)"
-  fi
+  [[ -n "$mountpoint_path" ]] && desc+=" (Montato in $mountpoint_path)" || desc+=" (Non montato)"
   menu_options+=("/dev/$name" "$desc")
 done <<< "$partitions"
 
-# Mostra il menu
-TARGET_DEV=$(dialog --clear --title "AriaOS - Backup Home" \
-        --menu "Scegli la partizione di destinazione per il backup:" 15 70 6 \
-        "${menu_options[@]}" \
-        3>&1 1>&2 2>&3)
-
-if [ -z "$TARGET_DEV" ]; then
+if ! TARGET_DEV=$(dialog --clear --title "AriaOS - Backup Home" \
+  --menu "Scegli la partizione di destinazione:" 15 70 6 \
+  "${menu_options[@]}" 3>&1 1>&2 2>&3); then
   clear
-  echo "Operazione annullata dall'utente."
+  echo "Operazione annullata."
   exit 0
 fi
 
-# Gestione mount
-MOUNT_POINT=$(lsblk -rn -o MOUNTPOINT "$TARGET_DEV")
-TEMP_MOUNT=0
-
-if [ -z "$MOUNT_POINT" ]; then
+MOUNT_POINT=$(lsblk -nr -o MOUNTPOINT "$TARGET_DEV" | head -n 1)
+if [[ -z "$MOUNT_POINT" ]]; then
   MOUNT_POINT=$(mktemp -d /tmp/ariaos-backup-mnt.XXXXXX)
-  if ! mount "$TARGET_DEV" "$MOUNT_POINT"; then
-    dialog --msgbox "Impossibile montare $TARGET_DEV." 8 50
-    rm -rf "$MOUNT_POINT"
-    exit 1
-  fi
+  mount "$TARGET_DEV" "$MOUNT_POINT"
   TEMP_MOUNT=1
 fi
 
 BACKUP_FILE="$MOUNT_POINT/ariaos_home.btrfs.zst"
-
-if [ -f "$BACKUP_FILE" ]; then
-  dialog --yesno "Il file $BACKUP_FILE esiste già.\nVuoi sovrascriverlo?" 8 60
-  response=$?
-  if [ $response -ne 0 ]; then
-    [ $TEMP_MOUNT -eq 1 ] && umount "$MOUNT_POINT" && rm -rf "$MOUNT_POINT"
-    clear
-    echo "Operazione annullata."
-    exit 0
-  fi
+PARTIAL_FILE="$BACKUP_FILE.partial.$$"
+if [[ -e "$BACKUP_FILE" ]] && ! dialog --yesno \
+  "Il file $BACKUP_FILE esiste già.\nVuoi sovrascriverlo?" 8 60; then
+  clear
+  echo "Operazione annullata."
+  BACKUP_FILE=
+  PARTIAL_FILE=
+  exit 0
 fi
 
-# Avviso e preparazione snapshot
+if btrfs subvolume show "$SNAPSHOT" >/dev/null 2>&1; then
+  btrfs subvolume delete "$SNAPSHOT" >/dev/null
+fi
 dialog --infobox "Creazione snapshot read-only in corso..." 5 50
-btrfs subvolume delete /var/home-backup &> /dev/null || true
+btrfs subvolume snapshot -r /var/home "$SNAPSHOT" >/dev/null
 
-if ! btrfs subvolume snapshot -r /var/home /var/home-backup >/dev/null 2>&1; then
-   dialog --msgbox "Impossibile creare la snapshot /var/home-backup." 8 50
-   [ $TEMP_MOUNT -eq 1 ] && umount "$MOUNT_POINT" && rm -rf "$MOUNT_POINT"
-   exit 1
+estimated_size=$(du -s -B1 "$SNAPSHOT" | awk '{print $1}')
+if ! (btrfs send "$SNAPSHOT" | pv -n -s "$estimated_size" | zstd -f -T0 -o "$PARTIAL_FILE") \
+  2>&1 | dialog --backtitle "AriaOS - Backup" --title "Esportazione" \
+  --gauge "Compressione e salvataggio in corso...\nDestinazione: $BACKUP_FILE" 10 70; then
+  dialog --title "Errore" --msgbox \
+    "Backup fallito. Il file parziale verrà rimosso." 8 60
+  exit 1
 fi
 
-# Esportazione
-# Esportazione stima
-ESTIMATED_SIZE=$(df --output=used -B1 /var/home | tail -1 | tr -d ' ')
+[[ -s "$PARTIAL_FILE" ]] || {
+  dialog --title "Errore" --msgbox "Il file di backup è vuoto." 8 50
+  exit 1
+}
+mv -f -- "$PARTIAL_FILE" "$BACKUP_FILE"
+PARTIAL_FILE=
 
-set -o pipefail
-if ! ( btrfs send /var/home-backup 2>/dev/null | pv -n -s "$ESTIMATED_SIZE" | zstd -T0 > "$BACKUP_FILE" ) 2>&1 | dialog --backtitle "AriaOS - Backup" --title "Esportazione in corso" --gauge "Compressione e salvataggio (Btrfs -> Zstd)...\nL'operazione può richiedere svariati minuti.\nDestinazione: $BACKUP_FILE" 10 70; then
-  dialog --backtitle "AriaOS - Backup" --title "Errore" --msgbox "Si è verificato un errore durante l'esportazione del backup." 8 50
-else
-  dialog --backtitle "AriaOS - Backup" --title "Completato" --msgbox "Backup completato con successo!\nFile salvato in:\n$BACKUP_FILE" 8 60
-fi
-set +o pipefail
-
-# Pulizia
-dialog --backtitle "AriaOS - Backup" --infobox "Rimozione snapshot temporanea e pulizia..." 5 50
-btrfs subvolume delete /var/home-backup >/dev/null 2>&1
-
-if [ $TEMP_MOUNT -eq 1 ]; then
-  umount "$MOUNT_POINT"
-  rm -rf "$MOUNT_POINT"
-fi
-
+dialog --title "Completato" --msgbox \
+  "Backup completato con successo.\nFile: $BACKUP_FILE" 8 70
 clear
