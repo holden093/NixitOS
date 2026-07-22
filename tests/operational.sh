@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+readonly repo_root
 readonly fixture="$repo_root/tests/fixtures/mock-command"
 test_root=$(mktemp -d /tmp/ariaos-operational.XXXXXX)
 
