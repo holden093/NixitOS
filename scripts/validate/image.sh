@@ -25,12 +25,17 @@ if [[ $freerdp_version != *ariaos* ]]; then
   exit 1
 fi
 
-for package in intel-compute-runtime intel-level-zero; do
+for package in intel-compute-runtime intel-level-zero nvidia-container-toolkit; do
   if ! run_image rpm -q "$package" >/dev/null 2>&1; then
-    echo "Required Intel compute package is missing: $package" >&2
+    echo "Required compute/container package is missing: $package" >&2
     exit 1
   fi
 done
+
+if ! run_image rpm -q nvidia-driver >/dev/null 2>&1; then
+  echo "NVIDIA host driver must be present in the image." >&2
+  exit 1
+fi
 
 run_image kubectl version --client >/dev/null
 run_image helm version --short >/dev/null
@@ -49,29 +54,45 @@ for removed_path in \
   /usr/bin/aria \
   /usr/share/aria \
   /usr/share/aria-gguf-engine \
-  /usr/lib/sysusers.d/ai-compute.conf; do
+  /usr/lib/sysusers.d/ai-compute.conf \
+  /usr/bin/llama-vm \
+  /etc/sudoers.d/llama-vm \
+  /usr/lib/bootc/kargs.d/ariaos-vfio.toml \
+  /usr/lib/udev/rules.d/69-ariaos-vfio.rules \
+  /etc/dracut.conf.d/ariaos-vfio.conf \
+  /usr/lib/bootc/kargs.d/bluebuild-kargs.toml; do
   if run_image test -e "$removed_path"; then
-    echo "Removed local-model path remains in image: $removed_path" >&2
+    echo "Removed path remains in image: $removed_path" >&2
     exit 1
   fi
 done
 
-for module in nvidia nvidia_uvm nouveau nvidia_modeset nvidia_drm; do
+for module in nvidia_drm nvidia_modeset nouveau; do
   run_image grep -Fqx "install $module /bin/false" /etc/modprobe.d/blacklist-nvidia.conf
 done
+for module in nvidia nvidia_uvm; do
+  if run_image grep -Fqx "install $module /bin/false" /etc/modprobe.d/blacklist-nvidia.conf; then
+    echo "Compute module $module must stay on-demand, not hard-blocked." >&2
+    exit 1
+  fi
+done
 
-if run_image rpm -q nvidia-driver >/dev/null 2>&1 ||
-   run_image rpm -q akmod-nvidia >/dev/null 2>&1; then
-  echo "NVIDIA host driver packages must not be present in the image." >&2
+run_image grep -Fq 'nvidia-drm.modeset=0' /usr/lib/bootc/kargs.d/ariaos-blacklist.toml
+
+if ! run_image test -x /usr/bin/ariaos; then
+  echo "ariaos command missing or not executable." >&2
   exit 1
 fi
-
-for vfio_path in \
-  /usr/lib/bootc/kargs.d/ariaos-vfio.toml \
-  /usr/lib/udev/rules.d/69-ariaos-vfio.rules \
-  /usr/bin/llama-vm; do
-  if ! run_image test -e "$vfio_path"; then
-    echo "Required VFIO/VM path missing: $vfio_path" >&2
+if ! run_image test -x /usr/libexec/ariaos-egpu; then
+  echo "ariaos-egpu helper missing or not executable." >&2
+  exit 1
+fi
+for path in \
+  /usr/lib/systemd/system/ariaos-egpu.service \
+  /usr/share/polkit-1/rules.d/50-ariaos-egpu.rules \
+  /usr/lib/ariaos/llm.conf; do
+  if ! run_image test -e "$path"; then
+    echo "Required AriaOS LLM/egpu path missing: $path" >&2
     exit 1
   fi
 done
@@ -80,19 +101,16 @@ for unit in podman.socket virtqemud.socket tuned.service btrfs-scrub.timer btrfs
   assert_unit_state "$unit" enabled
 done
 assert_unit_state ModemManager.service masked
+assert_unit_state ariaos-egpu.service disabled
 
-for sudoers_file in llama-vm tuned; do
-  mode=$(run_image stat -c '%a' "/etc/sudoers.d/$sudoers_file")
-  if [[ $mode != 440 ]]; then
-    echo "Unexpected sudoers mode for $sudoers_file: $mode" >&2
-    exit 1
-  fi
-done
+mode=$(run_image stat -c '%a' /etc/sudoers.d/tuned)
+if [[ $mode != 440 ]]; then
+  echo "Unexpected sudoers mode for tuned: $mode" >&2
+  exit 1
+fi
 
 run_image grep -Fqx 'g aria-games - -' /usr/lib/sysusers.d/aria-games.conf
 run_image grep -Fqx 'v /var/games 2775 root aria-games - -' \
-  /usr/lib/tmpfiles.d/ariaos-subvols.conf
-run_image grep -Fqx 'v /var/vms 0755 root root - -' \
   /usr/lib/tmpfiles.d/ariaos-subvols.conf
 
 for build_path in /ariaos-build /scripts/build /versions/external-tools.env; do

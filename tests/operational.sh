@@ -40,6 +40,7 @@ run_as_mock_root() {
     "ARIAOS_TEST_STATE=$ARIAOS_TEST_STATE"
     "ARIAOS_TEST_MOUNT=$ARIAOS_TEST_MOUNT"
     "ARIAOS_TEST_SCENARIO=${ARIAOS_TEST_SCENARIO:-}"
+    "ARIAOS_TEST_LSOF_PIDS=${ARIAOS_TEST_LSOF_PIDS:-}"
   )
 
   if [[ ${ARIAOS_TEST_DIRECT_ROOT:-0} == 1 ]]; then
@@ -49,6 +50,33 @@ run_as_mock_root() {
   fi
 
   unshare -Ur "${test_environment[@]}" "$@"
+}
+
+run_as_ariaos_user() {
+  # ariaos rifiuta di girare come root; quando la suite e' lanciata da root
+  # (CI), scende a un utente non privilegiato. La state dir diventa scrivibile
+  # dal mock dei comandi.
+  if (( EUID == 0 )); then
+    chmod -R a+rwX "$ARIAOS_TEST_STATE"
+    setpriv --reuid=65534 --regid=65534 --clear-groups "$@"
+  else
+    "$@"
+  fi
+}
+
+egpu_env() {
+  printf '%s\n' \
+    "ARIAOS_EGPU_SYSFS=$ARIAOS_TEST_STATE/sys" \
+    "ARIAOS_EGPU_CDI_DIR=$ARIAOS_TEST_STATE/cdi" \
+    "ARIAOS_EGPU_DEV_GLOB=$ARIAOS_TEST_STATE/dev/nvidia*" \
+    "ARIAOS_EGPU_KILL=$ARIAOS_TEST_STATE/bin/kill"
+}
+
+egpu_devices() {
+  mkdir -p "$ARIAOS_TEST_STATE/dev" "$ARIAOS_TEST_STATE/cdi" \
+    "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0" \
+    "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1"
+  : > "$ARIAOS_TEST_STATE/dev/nvidia0"
 }
 
 new_environment backup_failure
@@ -64,7 +92,6 @@ grep -q '^btrfs subvolume delete /var/home-backup$' "$ARIAOS_TEST_LOG" || \
 
 new_environment restore_invalid
 export ARIAOS_TEST_SCENARIO=restore_invalid
-: > "$ARIAOS_TEST_MOUNT/ariaos_home.btrfs.zst"
 printf 'invalid stream\n' > "$ARIAOS_TEST_MOUNT/ariaos_home.btrfs.zst"
 mock_commands btrfs dialog zstdcat pv lsblk mount mountpoint umount stat clear
 if run_as_mock_root bash "$repo_root/build_files/usr/bin/restore"; then
@@ -95,63 +122,88 @@ grep -q 'tuned-adm profile latency-performance' "$ARIAOS_TEST_LOG" || \
 grep -q 'tuned-adm profile balanced-battery' "$ARIAOS_TEST_LOG" || \
   fail "DAW launcher did not restore the original profile"
 
-vfio_drivers() {
-  mkdir -p "$ARIAOS_TEST_STATE/sys/bus/pci/drivers/vfio-pci" \
-    "$ARIAOS_TEST_STATE/sys/bus/pci/drivers/snd_hda_intel"
-}
-
-new_environment llama_vm_on
-export ARIAOS_TEST_SCENARIO=llama_vm_start
-mkdir -p "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0" \
-  "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1"
-vfio_drivers
-ln -s ../../drivers/vfio-pci "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/driver"
-ln -s ../../drivers/vfio-pci "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1/driver"
-: > "$ARIAOS_TEST_STATE/llama.qcow2"
-mkdir -p "$ARIAOS_TEST_STATE/models"
-mock_commands lspci virsh curl sleep
-run_as_mock_root env \
-  LLAMA_VM_SYSFS="$ARIAOS_TEST_STATE/sys" \
-  LLAMA_VM_DISK="$ARIAOS_TEST_STATE/llama.qcow2" \
-  LLAMA_VM_MODELS="$ARIAOS_TEST_STATE/models" \
-  bash "$repo_root/build_files/usr/bin/llama-vm" on
-for token in \
-  "lspci -D -n -d 10de:2504" \
-  "lspci -D -n -d 10de:228e" \
-  "virsh -c qemu:///system define /tmp/llama-vm" \
-  "virsh -c qemu:///system start llama-vm" \
-  "curl -fsS http://127.0.0.1:8080/v1/models"; do
-  grep -qF "$token" "$ARIAOS_TEST_LOG" || \
-    fail "llama-vm on omitted: $token"
-done
-grep -qF "virsh -c qemu:///system undefine --managed-save llama-vm" "$ARIAOS_TEST_LOG" || \
-  fail "llama-vm on did not redefine the domain"
-
-new_environment llama_vm_on_unbound
-export ARIAOS_TEST_SCENARIO=llama_vm_start
-mkdir -p "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0" \
-  "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1"
-: > "$ARIAOS_TEST_STATE/llama.qcow2"
-mkdir -p "$ARIAOS_TEST_STATE/models"
-vfio_drivers
-ln -s ../../drivers/vfio-pci "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/driver"
-ln -s ../../drivers/snd_hda_intel "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1/driver"
-mock_commands lspci virsh curl
-if run_as_mock_root env \
-  LLAMA_VM_SYSFS="$ARIAOS_TEST_STATE/sys" \
-  LLAMA_VM_DISK="$ARIAOS_TEST_STATE/llama.qcow2" \
-  LLAMA_VM_MODELS="$ARIAOS_TEST_STATE/models" \
-  bash "$repo_root/build_files/usr/bin/llama-vm" on; then
-  fail "llama-vm on succeeded with audio function not in vfio-pci"
+new_environment egpu_up
+: > "$ARIAOS_TEST_STATE/modules"
+egpu_devices
+mock_commands lspci modprobe lsmod nvidia-modprobe nvidia-ctk nvidia-smi lsof
+run_as_mock_root env $(egpu_env) bash "$repo_root/build_files/usr/libexec/ariaos-egpu" up
+grep -qF 'modprobe nvidia' "$ARIAOS_TEST_LOG" || \
+  fail "ariaos-egpu up did not load nvidia"
+grep -qF 'modprobe nvidia_uvm' "$ARIAOS_TEST_LOG" || \
+  fail "ariaos-egpu up did not load nvidia_uvm"
+if grep -qE 'modprobe nvidia_drm|modprobe nvidia_modeset' "$ARIAOS_TEST_LOG"; then
+  fail "ariaos-egpu up touched the display path"
 fi
-grep -qF "virsh -c qemu:///system start llama-vm" "$ARIAOS_TEST_LOG" && \
-  fail "llama-vm on started the VM despite vfio misbinding"
+grep -qF 'nvidia-ctk cdi generate' "$ARIAOS_TEST_LOG" || \
+  fail "ariaos-egpu up did not generate the CDI spec"
+grep -qx nvidia "$ARIAOS_TEST_STATE/modules" || \
+  fail "nvidia not loaded after ariaos-egpu up"
+grep -qx nvidia_uvm "$ARIAOS_TEST_STATE/modules" || \
+  fail "nvidia_uvm not loaded after ariaos-egpu up"
 
-new_environment llama_vm_off
-unset ARIAOS_TEST_SCENARIO
-mock_commands virsh sleep
-run_as_mock_root bash "$repo_root/build_files/usr/bin/llama-vm" off
-grep -qF "virsh -c qemu:///system shutdown llama-vm" "$ARIAOS_TEST_LOG" || \
-  fail "llama-vm off did not shut down the VM"
+new_environment egpu_down
+printf 'nvidia\nnvidia_uvm\n' > "$ARIAOS_TEST_STATE/modules"
+export ARIAOS_TEST_LSOF_PIDS=12345
+egpu_devices
+: > "$ARIAOS_TEST_STATE/cdi/nvidia.yaml"
+mock_commands lspci modprobe lsmod lsof kill sleep
+run_as_mock_root env $(egpu_env) bash "$repo_root/build_files/usr/libexec/ariaos-egpu" down
+grep -qF 'kill -15 12345' "$ARIAOS_TEST_LOG" || \
+  fail "ariaos-egpu down did not terminate the client"
+kill_line=$(grep -nF 'kill -15 12345' "$ARIAOS_TEST_LOG" | cut -d: -f1)
+mod_line=$(grep -nE 'modprobe -r nvidia$' "$ARIAOS_TEST_LOG" | cut -d: -f1)
+[[ -n $kill_line && -n $mod_line && $kill_line -lt $mod_line ]] || \
+  fail "ariaos-egpu down killed the client after unloading modules"
+[[ ! -e "$ARIAOS_TEST_STATE/cdi/nvidia.yaml" ]] || \
+  fail "ariaos-egpu down left the CDI spec behind"
+grep -qx 1 "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/remove" || \
+  fail "ariaos-egpu down did not remove the GPU from the bus"
+grep -qx 1 "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1/remove" || \
+  fail "ariaos-egpu down did not remove the audio function from the bus"
+
+new_environment egpu_down_no_unload
+export ARIAOS_TEST_SCENARIO=egpu_no_unload
+printf 'nvidia\nnvidia_uvm\n' > "$ARIAOS_TEST_STATE/modules"
+egpu_devices
+mock_commands lspci modprobe lsmod lsof kill sleep
+if run_as_mock_root env $(egpu_env) bash "$repo_root/build_files/usr/libexec/ariaos-egpu" down; then
+  fail "ariaos-egpu down succeeded with a module still loaded"
+fi
+[[ ! -e "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/remove" ]] || \
+  fail "ariaos-egpu down removed the device despite a busy module"
+
+new_environment ariaos_intel_refusal
+cat > "$ARIAOS_TEST_STATE/llm.conf" <<'EOF'
+INTEL_PORT=8080
+INTEL_HEALTH=http://127.0.0.1:8080/health
+INTEL_START=/bin/true
+INTEL_STOP=
+NVIDIA_PORT=8081
+NVIDIA_HEALTH=http://127.0.0.1:8081/health
+NVIDIA_START=/bin/true
+NVIDIA_STOP=
+EOF
+: > "$ARIAOS_TEST_STATE/egpu-active"
+mock_commands systemctl curl
+output=$(
+  run_as_ariaos_user env PATH="$ARIAOS_TEST_STATE/bin:/usr/bin:/bin" \
+    ARIAOS_LLM_CONF_DEFAULT="$ARIAOS_TEST_STATE/llm.conf" \
+    ARIAOS_LLM_CONF_OVERRIDE="$ARIAOS_TEST_STATE/nonexistent" \
+    ARIAOS_LLM_SYSTEMCTL="$ARIAOS_TEST_STATE/bin/systemctl" \
+    ARIAOS_LLM_CURL="$ARIAOS_TEST_STATE/bin/curl" \
+    bash "$repo_root/build_files/usr/bin/ariaos" llm intel up 2>&1
+) || true
+if [[ -z $output ]]; then
+  fail "ariaos llm intel up succeeded with the NVIDIA backend active"
+fi
+if ! grep -q 'Il backend NVIDIA e. attivo' <<< "$output"; then
+  fail "ariaos llm intel up refused for the wrong reason: $output"
+fi
+
+new_environment ariaos_root
+mock_commands systemctl curl
+if run_as_mock_root bash "$repo_root/build_files/usr/bin/ariaos" llm status; then
+  fail "ariaos llm succeeded when run as root"
+fi
 
 echo "Operational tests passed."

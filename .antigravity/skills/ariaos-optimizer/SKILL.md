@@ -21,8 +21,8 @@ This skill helps you refine the AriaOS codebase by comparing it with the active 
 
 ### 3. Performance Tuning
 - Suggest `sysctl` tweaks based on hardware (e.g., VM workload, SSD optimization).
-- Review `blacklist-nvidia.conf`, the VFIO kernel args, and the udev rules to confirm the eGPU stays reserved for `llama-vm`.
-- Check the guest little footprint (`llama-vm on|off`, VFIO binding, endpoint latency) instead of driver loading speed.
+- Review `blacklist-nvidia.conf`, the boot kargs (`ariaos-blacklist.toml`), and `configure-nvidia-policy.sh` to confirm the eGPU stays compute-only and on-demand, never on the display path.
+- Check the on-demand eGPU footprint (`ariaos llm nvidia up/down`, module load/unload, CDI spec) instead of driver loading speed.
 
 ### 4. Hardware-Specific Refinements
 - Use `lshw`, `lspci`, and `lsusb` to detect hardware and suggest missing drivers or firmware in the `Containerfile`.

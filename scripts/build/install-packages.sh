@@ -19,6 +19,7 @@ readonly packages=(
   vulkan-loader
   vulkan-tools
   clinfo
+  nvidia-container-toolkit
 
   # Networking and administration
   wireguard-tools

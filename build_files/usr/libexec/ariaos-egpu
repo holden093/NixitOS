@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# AriaOS ariaos-egpu
+# Helper root esclusivo per la eGPU NVIDIA compute-only. Viene invocato da
+# ariaos-egpu.service (tramite polkit); nessun altro comando dell'immagine
+# esegue operazioni privilegiate sulla scheda. Uso: ariaos-egpu up|down.
+#
+# Solo i moduli di calcolo (nvidia, nvidia_uvm) vengono caricati: nvidia_drm
+# e nvidia_modeset restano hard-blocked (nessun nodo DRM, la sessione GNOME
+# non puo' enumerare la scheda).
+
+readonly GPU_ID=${ARIAOS_EGPU_GPU_ID:-10de:2504}
+readonly AUDIO_ID=${ARIAOS_EGPU_AUDIO_ID:-10de:228e}
+readonly SYSFS=${ARIAOS_EGPU_SYSFS:-/sys}
+readonly CDI_DIR=${ARIAOS_EGPU_CDI_DIR:-/run/cdi}
+readonly DEV_GLOB=${ARIAOS_EGPU_DEV_GLOB:-/dev/nvidia*}
+readonly MODPROBE=${ARIAOS_EGPU_MODPROBE:-modprobe}
+readonly LSMOD=${ARIAOS_EGPU_LSMOD:-lsmod}
+readonly LSOF=${ARIAOS_EGPU_LSOF:-lsof}
+readonly KILL=${ARIAOS_EGPU_KILL:-/usr/bin/kill}
+readonly LSPCI=${ARIAOS_EGPU_LSPCI:-lspci}
+readonly NVIDIA_MODPROBE=${ARIAOS_EGPU_NVIDIA_MODPROBE:-nvidia-modprobe}
+readonly NVIDIA_CTK=${ARIAOS_EGPU_NVIDIA_CTK:-nvidia-ctk}
+readonly NVIDIA_SMI=${ARIAOS_EGPU_NVIDIA_SMI:-nvidia-smi}
+
+die() {
+  echo "❌ $*" >&2
+  exit 1
+}
+
+require_root() {
+  if [ "$EUID" -ne 0 ]; then
+    die "Questo helper deve essere eseguito come root (via ariaos-egpu.service)."
+  fi
+}
+
+bdf_of() {
+  "$LSPCI" -D -n -d "$1" | awk '{print $1}' | head -n1
+}
+
+cdi_spec() {
+  printf '%s\n' "$CDI_DIR/nvidia.yaml"
+}
+
+remove_device() {
+  # $1 = BDF; rimuove il device dal bus prima dello scollegamento fisico.
+  local bdf=$1
+  [[ -n $bdf ]] || return 0
+  local device="$SYSFS/bus/pci/devices/$bdf"
+  [[ -d $device ]] || return 0
+  echo 1 > "$device/remove"
+}
+
+cmd_up() {
+  echo "==> Rilevamento eGPU NVIDIA sul bus PCIe..."
+  local gpu_bdf
+  gpu_bdf=$(bdf_of "$GPU_ID")
+  [[ -n $gpu_bdf ]] || die "eGPU NVIDIA non rilevata. Verifica l'enclosure e autorizza con boltctl."
+
+  echo "==> Caricamento moduli di calcolo (nvidia, nvidia_uvm)..."
+  "$MODPROBE" nvidia
+  "$MODPROBE" nvidia_uvm
+
+  echo "==> Inizializzazione device node..."
+  if command -v "$NVIDIA_MODPROBE" >/dev/null; then
+    "$NVIDIA_MODPROBE" -c0 -u
+  fi
+
+  echo "==> Generazione spec CDI per i container..."
+  mkdir -p "$CDI_DIR"
+  "$NVIDIA_CTK" cdi generate --output="$(cdi_spec)"
+
+  echo "==> Verifica driver e percorso display..."
+  if "$LSMOD" | grep -qE '^nvidia_drm'; then
+    die "nvidia_drm e' caricato: la sessione potrebbe aver enumerato la eGPU."
+  fi
+  if "$LSMOD" | grep -qE '^nvidia_modeset'; then
+    die "nvidia_modeset e' caricato: il percorso display non deve essere attivo."
+  fi
+  command -v "$NVIDIA_SMI" >/dev/null && "$NVIDIA_SMI" -L
+  echo "✅ eGPU NVIDIA pronta: CUDA disponibile, display intatto su Intel Arc."
+}
+
+cmd_down() {
+  echo "==> Terminazione client attivi sulla eGPU..."
+  if compgen -G "$DEV_GLOB" >/dev/null 2>&1; then
+    local pids
+    pids=$("$LSOF" -t $DEV_GLOB 2>/dev/null | sort -u | tr '\n' ' ')
+    if [[ -n $pids ]]; then
+      echo "    Terminazione processi: ${pids}"
+      # shellcheck disable=SC2086
+      "$KILL" -15 $pids
+      sleep 2
+    fi
+  fi
+
+  echo "==> Rimozione moduli..."
+  "$MODPROBE" -r nvidia_uvm || true
+  "$MODPROBE" -r nvidia || true
+
+  if "$LSMOD" | grep -qE '^nvidia'; then
+    echo "❌ Moduli NVIDIA ancora in uso dal sistema." >&2
+    echo "    NON scollegare la eGPU. Termina i client e riprova." >&2
+    exit 1
+  fi
+
+  echo "==> Rimozione spec CDI..."
+  rm -f "$(cdi_spec)"
+
+  echo "==> Rimozione device dal bus PCIe (scollegamento pulito)..."
+  remove_device "$(bdf_of "$GPU_ID" || true)"
+  remove_device "$(bdf_of "$AUDIO_ID" || true)"
+
+  echo "✅ eGPU scaricata. Ora puoi scollegare il cavo Thunderbolt."
+}
+
+require_root
+case "${1:-}" in
+  up) cmd_up ;;
+  down) cmd_down ;;
+  *) echo "Uso: ariaos-egpu up|down" >&2; exit 1 ;;
+esac

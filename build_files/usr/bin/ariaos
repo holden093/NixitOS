@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# AriaOS
+# Comando di gestione del sistema. Attualmente espone il solo sottocomando
+# 'llm' per orchestrare i backend di inferenza locale. Non esegue MAI
+# operazioni privilegiate: la parte root della eGPU passa da
+# ariaos-egpu.service, autorizzata via polkit per il gruppo wheel.
+
+readonly CONF_DEFAULT=${ARIAOS_LLM_CONF_DEFAULT:-/usr/lib/ariaos/llm.conf}
+readonly CONF_OVERRIDE=${ARIAOS_LLM_CONF_OVERRIDE:-/etc/ariaos/llm.conf}
+readonly SYSTEMCTL=${ARIAOS_LLM_SYSTEMCTL:-systemctl}
+readonly CURL=${ARIAOS_LLM_CURL:-curl}
+readonly START_TIMEOUT=${ARIAOS_LLM_START_TIMEOUT:-120}
+readonly STOP_TIMEOUT=${ARIAOS_LLM_STOP_TIMEOUT:-30}
+
+die() {
+  echo "❌ $*" >&2
+  exit 1
+}
+
+require_user() {
+  if [ "$EUID" -eq 0 ]; then
+    die "ariaos deve girare come utente, mai come root."
+  fi
+}
+
+load_config() {
+  [[ -f $CONF_DEFAULT ]] || die "Configurazione mancante: ${CONF_DEFAULT}"
+  # shellcheck source=/dev/null
+  source "$CONF_DEFAULT"
+  if [[ -f $CONF_OVERRIDE ]]; then
+    # shellcheck source=/dev/null
+    source "$CONF_OVERRIDE"
+  fi
+}
+
+server_active() {
+  # $1 = health URL
+  "$CURL" -fsS -m 3 "$1" >/dev/null 2>&1
+}
+
+driver_active() {
+  "$SYSTEMCTL" -q is-active ariaos-egpu.service >/dev/null 2>&1
+}
+
+wait_for() {
+  # $1 = health URL, $2 = timeout secondi
+  local url=$1 timeout=$2
+  for _ in $(seq 1 "$timeout"); do
+    server_active "$url" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_shutdown() {
+  # $1 = health URL, $2 = timeout secondi; attende che la porta si liberi.
+  local url=$1 timeout=$2
+  for _ in $(seq 1 "$timeout"); do
+    server_active "$url" || return 0
+    sleep 1
+  done
+  return 1
+}
+
+backend_config() {
+  # Popola PORT/HEALTH/START/STOP per il backend $1 dai nomi prefissati
+  # (INTEL_*/NVIDIA_*). La config e' root-owned e fidata.
+  local prefix=$1
+  local port_name=${prefix}_PORT health_name=${prefix}_HEALTH
+  local start_name=${prefix}_START stop_name=${prefix}_STOP
+  PORT=${!port_name:-}
+  HEALTH=${!health_name:-}
+  START=${!start_name:-}
+  STOP=${!stop_name:-}
+}
+
+status_line() {
+  # $1 = backend (intel|nvidia)
+  local backend=$1
+  local prefix
+  prefix=$(echo "$backend" | tr '[:lower:]' '[:upper:]')
+  backend_config "$prefix"
+  local label=$backend
+  if [[ $backend == nvidia ]]; then
+    if driver_active; then
+      label="$backend (driver attivo)"
+    else
+      label="$backend (driver fermo)"
+    fi
+  fi
+  if [[ -z $START ]]; then
+    echo "  ${label}: non configurato (START mancante in llm.conf)"
+  elif server_active "$HEALTH"; then
+    echo "  ${label}: attivo su porta ${PORT}"
+  else
+    echo "  ${label}: fermo"
+  fi
+}
+
+cmd_status() {
+  echo "Backend di inferenza locale:"
+  status_line intel
+  status_line nvidia
+}
+
+cmd_up() {
+  local backend=$1
+  local prefix
+  prefix=$(echo "$backend" | tr '[:lower:]' '[:upper:]')
+  backend_config "$prefix"
+  [[ -n $START ]] || die "Backend $backend non configurato: compila START in ${CONF_OVERRIDE}"
+
+  if [[ $backend == nvidia ]]; then
+    # Mutua esclusione: Intel (Arc) e' il display, non deve servire se la
+    # eGPU sta calcolando con un altro modello.
+    if server_active "$INTEL_HEALTH"; then
+      die "Il backend Intel e' attivo: esegui prima 'ariaos llm intel down'."
+    fi
+    echo "==> Avvio driver eGPU (ariaos-egpu.service)..."
+    "$SYSTEMCTL" start ariaos-egpu.service
+  else
+    if server_active "$NVIDIA_HEALTH" || driver_active; then
+      die "Il backend NVIDIA e' attivo: esegui prima 'ariaos llm nvidia down'."
+    fi
+  fi
+
+  echo "==> Avvio server ${backend}..."
+  bash -c "$START"
+  if wait_for "$HEALTH" "$START_TIMEOUT"; then
+    echo "✅ ${backend} attivo: ${HEALTH}"
+  else
+    echo "⚠️  Server avviato ma endpoint non raggiungibile entro ${START_TIMEOUT}s." >&2
+  fi
+}
+
+cmd_down() {
+  local backend=$1
+  local prefix
+  prefix=$(echo "$backend" | tr '[:lower:]' '[:upper:]')
+  backend_config "$prefix"
+
+  if [[ -n $STOP ]]; then
+    echo "==> Arresto server ${backend}..."
+    bash -c "$STOP"
+  fi
+  if [[ -n $HEALTH ]]; then
+    if ! wait_for_shutdown "$HEALTH" "$STOP_TIMEOUT"; then
+      echo "⚠️  Server ${backend} ancora in ascolto dopo ${STOP_TIMEOUT}s." >&2
+    fi
+  fi
+
+  if [[ $backend == nvidia ]]; then
+    echo "==> Scarico driver eGPU (ariaos-egpu.service)..."
+    "$SYSTEMCTL" stop ariaos-egpu.service
+  fi
+  echo "✅ ${backend} fermato."
+}
+
+require_user
+load_config
+command=${1:-}
+backend=${2:-}
+verb=${3:-}
+case "$command" in
+  llm)
+    case "$backend" in
+      status) cmd_status ;;
+      intel|nvidia)
+        case "$verb" in
+          up) cmd_up "$backend" ;;
+          down) cmd_down "$backend" ;;
+          *) echo "Uso: ariaos llm {status, <intel|nvidia> <up|down>}" >&2; exit 1 ;;
+        esac
+        ;;
+      *) echo "Uso: ariaos llm {status, <intel|nvidia> <up|down>}" >&2; exit 1 ;;
+    esac
+    ;;
+  *)
+    echo "Uso: ariaos llm {status, <intel|nvidia> <up|down>}" >&2
+    exit 1
+    ;;
+esac

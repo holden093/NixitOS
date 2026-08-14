@@ -10,7 +10,7 @@ AriaOS è un sistema operativo personale, immutabile e dichiarativo basato su Fe
 - Sistema riproducibile: ogni modifica persistente vive nel repository.
 - Base nativa essenziale, con Flatpak e Distrobox per applicazioni non critiche.
 - Intel Arc sempre disponibile per desktop, media e calcolo OpenCL/Level Zero.
-- eGPU NVIDIA mai inizializzata dall'host (riservata a vfio-pci) e usata solo da una VM dedicata come endpoint OpenAI locale.
+- eGPU NVIDIA **compute-only on-demand**: caricata solo per l'inferenza CUDA, mai sul percorso display.
 - Backup giornalieri e ripristino bare-metal indipendenti.
 - Buona autonomia nell'uso normale e tuning dinamico per sessioni audio.
 
@@ -20,9 +20,9 @@ AriaOS è un sistema operativo personale, immutabile e dichiarativo basato su Fe
 |---|---|
 | Base | Fedora Silverblue 44, `bootc`, `blue-build` |
 | Desktop | GNOME Wayland con tema Yaru |
-| GPU primaria | Intel Arc Lunar Lake |
-| GPU secondaria | NVIDIA eGPU Thunderbolt, riservata a vfio-pci e passata a una VM |
-| VM IA | `llama-vm`: 2 vCPU / 4 GiB, headless, endpoint OpenAI su `127.0.0.1:8080` |
+| GPU primaria | Intel Arc Lunar Lake (display + Vulkan) |
+| GPU secondaria | NVIDIA eGPU Thunderbolt, compute-only on-demand (mai display) |
+| Inferenza IA | `ariaos llm intel` (Vulkan, porta 8080) / `ariaos llm nvidia` (CUDA, porta 8081) |
 | Storage | Btrfs con compressione `zstd:1` |
 | Cifratura | LUKS2, TPM 2.0 e Discoverable Partitions Specification |
 | Memoria | 32 GB RAM, zRAM da 16 GB con `zstd` |
@@ -33,39 +33,27 @@ AriaOS è un sistema operativo personale, immutabile e dichiarativo basato su Fe
 
 Intel Arc dispone di `intel-compute-runtime`, `intel-level-zero`, OpenCL e strumenti Vulkan per desktop, media e calcolo, senza alcun motore LLM host-side.
 
-La eGPU NVIDIA (RTX 3060 `10de:2504` + audio `10de:228e`) è **riservata a `vfio-pci`** tramite i kernel arguments (`vfio-pci.ids=`, `pcie_acs_override=downstream`) e una regola udev: l'host non la inizializza mai, non carica driver NVIDIA e la passa per intero alla VM `llama-vm`. La riserva è per vendor/device, quindi cambiare porta Thunderbolt non richiede modifiche.
+La eGPU NVIDIA (RTX 3060 `10de:2504` + audio `10de:228e`) è **compute-only**: a boot non viene mai inizializzata. `ariaos-egpu.service` carica on-demand solo i moduli di calcolo (`nvidia`, `nvidia_uvm`); i moduli display (`nvidia_drm`, `nvidia_modeset`) e `nouveau` sono bloccati in modo permanente. Senza nodo DRM la sessione GNOME non può enumerare la scheda, quindi non esiste alcun rischio che la sessione venga "rubata" o che lo scaricamento fallisca.
 
 > [!CAUTION]
-> Scollegamento a freddo: fermare prima la VM con `sudo llama-vm off`. Non scollegare mai l'enclosure mentre la VM è in esecuzione.
+> Scollegamento a freddo: eseguire prima `ariaos llm nvidia down` (che rimuove anche i device dal bus PCIe). Non scollegare mai il cavo Thunderbolt con il driver attivo.
 
-### VM AI (llama-vm)
+### Inferenza locale (ariaos llm)
 
-`llama-vm` è una macchina virtuale headless (2 vCPU / 4 GiB) che esegue llama.cpp come endpoint compatibile OpenAI su `http://127.0.0.1:8080/v1`. I modelli GGUF vivono sull'host in `/var/vms/models` (subvolume Btrfs) e sono montati read-only nella VM via virtiofs.
-
-Uso quotidiano:
+`ariaos llm` orchestra due backend di inferenza mutuamente esclusivi. I motori (llama.cpp) vivono nei **tuoi toolbox**, non nell'immagine: l'OS fornisce driver, spec CDI e orchestrazione, mentre i comandi di avvio dei server sono dichiarati in `/etc/ariaos/llm.conf` (default in `/usr/lib/ariaos/llm.conf`).
 
 ```bash
-sudo llama-vm status   # stato eGPU, dominio ed endpoint
-sudo llama-vm on       # verifica vfio-pci, definisce/aggiorna il dominio, avvia e attende l'endpoint
-sudo llama-vm off      # spegne la VM (poi si può scollegare la eGPU)
+ariaos llm status              # stato di entrambi i backend e dei driver
+ariaos llm intel up|down       # backend Vulkan su Intel Arc (porta 8080)
+ariaos llm nvidia up|down      # backend CUDA sulla eGPU (porta 8081)
 ```
 
-Aggiungere un modello:
+Esempi d'uso:
 
-```bash
-sudo guest/fetch-model.sh https://example.com/modello.gguf SHA256 # opzionale
-sudo llama-vm off && sudo llama-vm on
-```
+- **In mobilità**: `ariaos llm intel up` — modello in RAM eseguito da Intel Arc via Vulkan.
+- **A casa con l'enclosure**: `ariaos llm nvidia up` — carica i moduli NVIDIA, genera la spec CDI in `/run/cdi` e avvia il server CUDA; `nvidia down` ferma il server, scarica i moduli e rimuove i device per lo scollegamento.
 
-Provisioning iniziale (una tantum, dopo aver aggiornato l'immagine):
-
-```bash
-sudo guest/build.sh        # costruisce /var/vms/llama/llama.qcow2 (bootc-image-builder)
-sudo guest/install-vm.sh   # crea /var/vms/models, definisce e avvia la VM
-sudo guest/fetch-model.sh <URL-del-gguf>
-```
-
-La guest è un appliance Fedora fisso (kernel pinnato via `excludepkgs=kernel*`); il modulo NVIDIA viene compilato alla creazione dell'immagine. Chiave SSH/console: `sudo virsh -c qemu:///system console llama-vm`.
+`up` su un backend rifiuta l'avvio se l'altro è attivo (niente contesa di RAM/GPU o conflitti di porta). Il comando gira come utente; la parte privilegiata passa da `ariaos-egpu.service`, autorizzata via polkit per il gruppo `wheel` solo su quella unit.
 
 ### Backup e storage
 
@@ -103,10 +91,10 @@ sudo reboot
 Dopo il primo avvio, aggiungere l'utente ai gruppi richiesti:
 
 ```bash
-sudo usermod -aG realtime,audio,aria-games,libvirt "$USER"
+sudo usermod -aG wheel,realtime,audio,aria-games,libvirt "$USER"
 ```
 
-Terminare la sessione o riavviare affinché i nuovi gruppi siano applicati.
+Terminare la sessione o riavviare affinché i nuovi gruppi siano applicati. Il gruppo `wheel` è necessario per la regola polkit che autorizza `ariaos llm nvidia up/down` senza password.
 
 Per associare il volume root al TPM usando PCR 7, sostituire il device con quello reale verificato tramite `lsblk`:
 
@@ -115,6 +103,17 @@ sudo systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 /dev/nvme0n1p3
 ```
 
 PCR 8 e 9 non sono adatti a questo sistema: aggiornamenti `bootc` modificano kernel, riga di comando e initramfs e causerebbero richieste ricorrenti della passphrase di recupero.
+
+### Configurare i backend di inferenza
+
+L'immagine non contiene né modelli né motori. Copiare il default e dichiarare i propri launcher:
+
+```bash
+sudo cp /usr/lib/ariaos/llm.conf /etc/ariaos/llm.conf
+sudoedit /etc/ariaos/llm.conf
+```
+
+Per ogni backend si dichiarano porta, endpoint di health check e comandi `START`/`STOP` (eseguiti come utente). I toolbox con llama.cpp (Vulkan e CUDA) sono artefatti personali non riproducibili dall'immagine: `ariaos llm status` li riporta come "non configurato" finché non li dichiari.
 
 ## Struttura del repository
 
@@ -125,12 +124,11 @@ scripts/build/                mutazioni temporanee eseguite durante la build
 scripts/validate/             controlli statici e contratto dell'immagine
 tests/                        test operativi isolati con comandi simulati
 versions/external-tools.env   versioni e checksum degli artefatti upstream
-guest/                        provisioning della VM AI: Containerfile, versioni e script build/install/fetch
 .github/workflows/            build e pubblicazione dell'immagine
 AGENTS.md                     invarianti tecnici per gli agenti
 ```
 
-I moduli in `scripts/build/` vengono montati da uno stage `scratch` e non rimangono nell'immagine finale. La guest AI è riproducibile da `guest/` ma la sua costruzione non fa parte del preflight host (QEMU/KVM, rete e download).
+I moduli in `scripts/build/` vengono montati da uno stage `scratch` e non rimangono nell'immagine finale.
 
 ## Sviluppo e validazione
 

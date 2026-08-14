@@ -1,2 +1,0 @@
-# Permetti agli utenti del gruppo wheel di gestire la VM AI senza password
-%wheel ALL=(ALL) NOPASSWD: /usr/bin/llama-vm

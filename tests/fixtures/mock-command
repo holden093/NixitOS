@@ -20,6 +20,12 @@ case "$command_name" in
   clear|mount|umount|mountpoint|nvidia-modprobe|udevadm|sleep|kill)
     exit 0
     ;;
+  curl)
+    if [[ -e ${ARIAOS_TEST_STATE:?}/curl-ok ]]; then
+      exit 0
+    fi
+    exit 1
+    ;;
   date)
     printf '1700000000\n'
     ;;
@@ -43,7 +49,12 @@ case "$command_name" in
     fi
     ;;
   lsmod)
-    exit 0
+    cat "${ARIAOS_TEST_STATE:?}/modules" 2>/dev/null || true
+    ;;
+  lsof)
+    if [[ -n ${ARIAOS_TEST_LSOF_PIDS:-} ]]; then
+      printf '%s\n' "$ARIAOS_TEST_LSOF_PIDS"
+    fi
     ;;
   lspci)
     case " $* " in
@@ -52,29 +63,24 @@ case "$command_name" in
       *) exit 0 ;;
     esac
     ;;
-  virsh)
-    case " $* " in
-      *" domstate llama-vm "*)
-        if [[ -e ${ARIAOS_TEST_STATE:?}/vm-shutdown ]]; then
-          printf 'shut off\n'
-        elif [[ ${ARIAOS_TEST_SCENARIO:-} == llama_vm_start ]]; then
-          printf 'shut off\n'
-        else
-          printf 'running\n'
+  modprobe)
+    case " ${1:-} ${2:-} " in
+      " -r nvidia_uvm ")
+        sed -i '/^nvidia_uvm$/d' "${ARIAOS_TEST_STATE:?}/modules"
+        ;;
+      " -r nvidia ")
+        if [[ ${ARIAOS_TEST_SCENARIO:-} != egpu_no_unload ]]; then
+          sed -i '/^nvidia$/d' "${ARIAOS_TEST_STATE:?}/modules"
         fi
         ;;
-      *" shutdown llama-vm "*)
-        : > "${ARIAOS_TEST_STATE:?}/vm-shutdown"
-        exit 0
+      *)
+        if [[ ${1:-} == -r ]]; then
+          exit 0
+        fi
+        grep -qx "$1" "${ARIAOS_TEST_STATE:?}/modules" 2>/dev/null || \
+          echo "$1" >> "${ARIAOS_TEST_STATE:?}/modules"
         ;;
-      *) exit 0 ;;
     esac
-    ;;
-  curl)
-    exit 0
-    ;;
-  modprobe|chmod)
-    exit 0
     ;;
   mv)
     if [[ ${ARIAOS_TEST_SCENARIO:-} == restore_rollback && ${2:-} == /var/home ]]; then
@@ -84,6 +90,9 @@ case "$command_name" in
         exit 1
       fi
     fi
+    exit 0
+    ;;
+  nvidia-ctk)
     exit 0
     ;;
   nvidia-smi)
@@ -103,6 +112,19 @@ case "$command_name" in
     ;;
   sudo)
     "$@"
+    ;;
+  systemctl)
+    case " $* " in
+      *" is-active ariaos-egpu.service "*)
+        [[ -e ${ARIAOS_TEST_STATE:?}/egpu-active ]]
+        ;;
+      *" start ariaos-egpu.service "*)
+        : > "${ARIAOS_TEST_STATE:?}/egpu-active"
+        ;;
+      *" stop ariaos-egpu.service "*)
+        rm -f "${ARIAOS_TEST_STATE:?}/egpu-active"
+        ;;
+    esac
     ;;
   tuned-adm)
     if [[ ${1:-} == active ]]; then

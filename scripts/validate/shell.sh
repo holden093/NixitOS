@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 mapfile -t shell_scripts < <(
-  find build_files/usr/bin scripts .antigravity/skills guest -type f -print0 |
+  find build_files/usr/bin build_files/usr/libexec scripts .antigravity/skills -type f -print0 |
     xargs -0 grep -Il '^#!.*\(ba\)\?sh'
 )
 

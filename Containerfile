@@ -25,8 +25,9 @@ RUN dnf install -y 'dnf-command(builddep)' rpm-build && \
         freerdp-*.src.rpm && \
     echo "AriaOS: FreeRDP RPMs built with FFmpeg/x264 + VAAPI."
 
-# L'immagine base pulita, senza alcun driver NVIDIA
-FROM ghcr.io/blue-build/base-images/fedora-silverblue:44
+# Immagine base con driver NVIDIA (compute-only): la policy display-off viene
+# applicata da configure-nvidia-policy.sh prima della rigenerazione dell'initramfs.
+FROM ghcr.io/blue-build/base-images/fedora-silverblue-nvidia:44
 
 # ==========================================
 # 1. COPIA FILE CUSTOM E PERMESSI
@@ -38,11 +39,16 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     # build_files alone does not remove files inherited by an image upgrade.
     rm -rf /usr/share/aria /usr/share/aria-gguf-engine && \
     rm -f /usr/bin/aria /usr/lib/sysusers.d/ai-compute.conf && \
-    chmod +x /usr/bin/llama-vm /usr/bin/backup /usr/bin/restore /usr/bin/ariaos-daw-launcher && \
-    chmod 0440 /etc/sudoers.d/llama-vm /etc/sudoers.d/tuned
+    # Retired VM inference path (llama-vm / VFIO): removing the files also
+    # removes the VFIO kargs that would otherwise survive an image upgrade.
+    rm -f /usr/bin/llama-vm /etc/sudoers.d/llama-vm \
+          /usr/lib/bootc/kargs.d/ariaos-vfio.toml \
+          /usr/lib/udev/rules.d/69-ariaos-vfio.rules \
+          /etc/dracut.conf.d/ariaos-vfio.conf && \
+    chmod +x /usr/bin/ariaos /usr/libexec/ariaos-egpu /usr/bin/backup /usr/bin/restore /usr/bin/ariaos-daw-launcher && \
+    chmod 0440 /etc/sudoers.d/tuned
 
-RUN visudo -cf /etc/sudoers.d/llama-vm && \
-    visudo -cf /etc/sudoers.d/tuned
+RUN visudo -cf /etc/sudoers.d/tuned
 
 # ==========================================
 # 2. MODULI DI BUILD
@@ -58,6 +64,9 @@ RUN --mount=type=bind,from=build-tools,source=/,target=/ariaos-build \
 RUN --mount=type=bind,from=build-tools,source=/,target=/ariaos-build \
     bash /ariaos-build/scripts/build/install-kubernetes-tools.sh \
         /ariaos-build/versions/external-tools.env
+
+RUN --mount=type=bind,from=build-tools,source=/,target=/ariaos-build \
+    bash /ariaos-build/scripts/build/configure-nvidia-policy.sh
 
 # ==========================================
 # 2b. OVERRIDE FREERDP WITH FFMPEG/x264 + VAAPI BUILD
@@ -93,7 +102,8 @@ RUN cp -n /usr/share/plymouth/themes/spinner/*.png /usr/share/plymouth/themes/ar
     plymouth-set-default-theme ariaos && \
     # Creiamo /var/roothome per evitare che dracut fallisca a causa di /root come symlink rotto nel container
     mkdir -p /var/roothome && \
-    # Rigeneriamo l'initramfs ALLA FINE per applicare i driver VFIO, le esclusioni NVIDIA e il TPM
+    # Rigeneriamo l'initramfs ALLA FINE per applicare la policy NVIDIA
+    # display-off, le esclusioni dei moduli di calcolo e il TPM
     dracut -f --regenerate-all
 
 # ==========================================
