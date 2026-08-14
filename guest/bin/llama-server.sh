@@ -10,7 +10,13 @@ set -Eeuo pipefail
 # backend Vulkan usa l'ICD Vulkan del driver NVIDIA. Per massimizzare il
 # vano sul die GPU il numero di layer e' lasciato alto.
 
-model=$(ls /models/*.gguf 2>/dev/null | head -n1)
+model=
+if compgen -G '/models/*.gguf' >/dev/null 2>&1; then
+  for candidate in /models/*.gguf; do
+    model=$candidate
+    break
+  done
+fi
 if [[ -z ${model} ]]; then
   echo "Nessun modello in /models. Aggiungilo sull'host con guest/fetch-model.sh." >&2
   exit 7

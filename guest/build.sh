@@ -6,9 +6,8 @@ set -Eeuo pipefail
 # Operazione pesante: va eseguita una sola volta sulla macchina target, con
 # sudo, dopo l'installazione dell'immagine AriaOS aggiornata.
 
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 guest_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-readonly repo_root guest_dir
+readonly guest_dir
 
 versions_file="$guest_dir/versions.env"
 # shellcheck source=/dev/null

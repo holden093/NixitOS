@@ -79,9 +79,7 @@ done
 for unit in podman.socket virtqemud.socket tuned.service btrfs-scrub.timer btrfs-balance.timer; do
   assert_unit_state "$unit" enabled
 done
-for unit in ModemManager.service; do
-  assert_unit_state "$unit" masked
-done
+assert_unit_state ModemManager.service masked
 
 for sudoers_file in llama-vm tuned; do
   mode=$(run_image stat -c '%a' "/etc/sudoers.d/$sudoers_file")
