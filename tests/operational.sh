@@ -28,7 +28,9 @@ new_environment() {
 mock_commands() {
   local command
   for command in "$@"; do
-    ln -s "$fixture" "$ARIAOS_TEST_STATE/bin/$command"
+    # Copia, non symlink: i comandi devono restare leggibili anche quando la
+    # suite scende a un utente non privilegiato (il fixture vive nel repo).
+    cp "$fixture" "$ARIAOS_TEST_STATE/bin/$command"
   done
 }
 
@@ -54,10 +56,10 @@ run_as_mock_root() {
 
 run_as_ariaos_user() {
   # ariaos rifiuta di girare come root; quando la suite e' lanciata da root
-  # (CI), scende a un utente non privilegiato. La state dir diventa scrivibile
-  # dal mock dei comandi.
+  # (CI), scende a un utente non privilegiato. La radice dei test (mktemp
+  # 0700) e i file diventano leggibili dal mock dei comandi.
   if (( EUID == 0 )); then
-    chmod -R a+rwX "$ARIAOS_TEST_STATE"
+    chmod -R a+rwX "$test_root"
     setpriv --reuid=65534 --regid=65534 --clear-groups "$@"
   else
     "$@"
@@ -189,13 +191,15 @@ NVIDIA_STOP=
 EOF
 : > "$ARIAOS_TEST_STATE/egpu-active"
 mock_commands systemctl curl
+cp "$repo_root/build_files/usr/bin/ariaos" "$ARIAOS_TEST_STATE/ariaos"
+chmod a+rx "$ARIAOS_TEST_STATE/ariaos"
 output=$(
   run_as_ariaos_user env PATH="$ARIAOS_TEST_STATE/bin:/usr/bin:/bin" \
     ARIAOS_LLM_CONF_DEFAULT="$ARIAOS_TEST_STATE/llm.conf" \
     ARIAOS_LLM_CONF_OVERRIDE="$ARIAOS_TEST_STATE/nonexistent" \
     ARIAOS_LLM_SYSTEMCTL="$ARIAOS_TEST_STATE/bin/systemctl" \
     ARIAOS_LLM_CURL="$ARIAOS_TEST_STATE/bin/curl" \
-    bash "$repo_root/build_files/usr/bin/ariaos" llm intel up 2>&1
+    bash "$ARIAOS_TEST_STATE/ariaos" llm intel up 2>&1
 ) || true
 if [[ -z $output ]]; then
   fail "ariaos llm intel up succeeded with the NVIDIA backend active"
