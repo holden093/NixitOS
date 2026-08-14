@@ -9,8 +9,7 @@ fi
 for helper in \
   install-packages.sh \
   install-kubernetes-tools.sh \
-  configure-services.sh \
-  configure-nvidia-policy.sh; do
+  configure-services.sh; do
   if ! rg -q "scripts/build/$helper" Containerfile; then
     echo "Containerfile does not invoke required build module: $helper" >&2
     exit 1

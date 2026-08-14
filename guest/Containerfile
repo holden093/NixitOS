@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE:-quay.io/fedora/fedora-bootc:44}
+
+ARG LLAMA_VERSION
+ARG LLAMA_SRC_SHA256
+
+# Guest come appliance fisso: il kernel non deve piu' cambiare, altrimenti il
+# modulo NVIDIA precompilato in questo build non corrisponderebbe piu'.
+RUN printf 'excludepkgs=kernel*\n' >> /etc/dnf/dnf.conf
+
+RUN dnf5 install -y \
+        https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-44.noarch.rpm && \
+    kver=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}' kernel) && \
+    dnf5 install -y \
+        "kernel-devel-${kver}" \
+        akmod-nvidia nvidia-driver \
+        gcc gcc-c++ make rpm-build kmodtool \
+        vulkan-loader vulkan-headers glslang shaderc spirv-tools libvulkan-devel \
+        cmake curl && \
+    akmods --force && \
+    depmod -a "${kver}" && \
+    dnf5 clean all && \
+    echo "AriaOS guest: modulo NVIDIA precompilato per ${kver}."
+
+RUN curl -fL -o /tmp/llama.tar.gz \
+        "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${LLAMA_VERSION}.tar.gz" && \
+    echo "${LLAMA_SRC_SHA256}  /tmp/llama.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/llama.tar.gz -C /tmp && \
+    cmake -S "/tmp/llama.cpp-${LLAMA_VERSION}" -B /tmp/llama-build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DGGML_VULKAN=ON \
+        -DGGML_VULKAN_DEBUG=OFF \
+        -DGGML_NATIVE=OFF && \
+    cmake --build /tmp/llama-build --target llama-server -j"$(nproc)" && \
+    cmake --install /tmp/llama-build && \
+    rm -rf /tmp/llama.tar.gz "/tmp/llama.cpp-${LLAMA_VERSION}" /tmp/llama-build && \
+    echo "AriaOS guest: llama.cpp ${LLAMA_VERSION} (Vulkan)."
+
+COPY bin/llama-server.sh /usr/local/bin/llama-server.sh
+COPY systemd/models.mount /etc/systemd/system/models.mount
+COPY systemd/llama-server.service /etc/systemd/system/llama-server.service
+
+RUN useradd --system --no-create-home --shell /sbin/nologin llama && \
+    install -d -o llama -g llama /models && \
+    chmod 0755 /usr/local/bin/llama-server.sh && \
+    systemctl enable models.mount llama-server.service && \
+    echo "AriaOS guest: servizi endpoint attivi."

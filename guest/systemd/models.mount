@@ -1,0 +1,12 @@
+[Unit]
+Description=Monta i modelli GGUF condivisi dall'host via virtiofs
+Before=llama-server.service
+
+[Mount]
+What=/models
+Where=/models
+Type=virtiofs
+Options=defaults,ro
+
+[Install]
+WantedBy=multi-user.target

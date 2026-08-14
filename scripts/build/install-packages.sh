@@ -96,7 +96,9 @@ glibc_version=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}' glibc)
 dnf5 swap -y glibc-all-langpacks "glibc-langpack-it-${glibc_version}"
 dnf5 remove -y --no-autoremove "${removed_packages[@]}"
 
-# CKAN's Mono post-install expects this conventional certificate path.
-ln -s /etc/pki/tls/certs/ca-bundle.crt /etc/pki/tls/cert.pem
+# CKAN's Mono post-install expects the conventional certificate paths, whose
+# legacy ca-bundle.crt symlink was dropped on Fedora 44.
+ln -sf /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/pki/tls/certs/ca-bundle.crt
+ln -sf /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem /etc/pki/tls/cert.pem
 dnf5 install -y "${packages[@]}"
 dnf5 clean all

@@ -5,10 +5,10 @@
 - **GitOps Flow**: Every change should be reflected in the `Containerfile`. Avoid manual `rpm-ostree install` on the running system except for testing.
 - **Clean Layers**: Use `dnf5` during bootc container builds and run `dnf5 clean all` after installs to keep image size down.
 
-## eGPU Management (NVIDIA)
-- **Early Loading**: Ensure `nvidia` and `nvidia_uvm` are not loaded   if eGPU is detected. The eGPU usage should be OPTIONAL and "on-demand"
-- **Power Management**: Use `powertop` to monitor if the eGPU is consuming power when idle.
-- **Clean Unload**: Always ensure processes using the GPU are killed before unloading modules to avoid kernel panics or hung states.
+## eGPU Management (NVIDIA via VFIO)
+- **Reservation**: The eGPU must stay bound to `vfio-pci` (`vfio-pci.ids=`, `pcie_acs_override=downstream`); the host must never bind a NVIDIA/Nouveau/audio driver.
+- **VM-only**: The device belongs to the `llama-vm` domain. `powertop` can confirm the host does not initialize the NVIDIA functions at all.
+- **Cold-unplug**: Always `llama-vm off` before disconnecting the Thunderbolt cable.
 
 ## Intel Arc (Media and Compute)
 - **Media Runtime**: Ensure `libva-intel-media-driver` is correctly configured for hardware acceleration in apps like OBS or FFmpeg.

@@ -46,7 +46,32 @@ case "$command_name" in
     exit 0
     ;;
   lspci)
-    printf '01:00.0 VGA compatible controller: NVIDIA test adapter\n'
+    case " $* " in
+      *" 10de:2504 "*) printf '0000:06:00.0 VGA compatible controller: NVIDIA test GPU\n' ;;
+      *" 10de:228e "*) printf '0000:06:00.1 Audio device: NVIDIA test audio\n' ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  virsh)
+    case " $* " in
+      *" domstate llama-vm "*)
+        if [[ -e ${ARIAOS_TEST_STATE:?}/vm-shutdown ]]; then
+          printf 'shut off\n'
+        elif [[ ${ARIAOS_TEST_SCENARIO:-} == llama_vm_start ]]; then
+          printf 'shut off\n'
+        else
+          printf 'running\n'
+        fi
+        ;;
+      *" shutdown llama-vm "*)
+        : > "${ARIAOS_TEST_STATE:?}/vm-shutdown"
+        exit 0
+        ;;
+      *) exit 0 ;;
+    esac
+    ;;
+  curl)
+    exit 0
     ;;
   modprobe|chmod)
     exit 0

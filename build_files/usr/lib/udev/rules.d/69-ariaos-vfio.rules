@@ -1,0 +1,7 @@
+# AriaOS: riserva stabilmente la eGPU NVIDIA a vfio-pci per il passthrough verso llama-vm.
+# Il binding avviene tramite vfio-pci.ids= nei kargs sia a boot sia in hotplug;
+# driver_override e' difesa aggiuntiva contro altri driver (es. snd_hda_intel
+# sulla funzione audio). Il matching e' per vendor/device, indipendente dal
+# path PCIe, quindi vale per qualsiasi porta Thunderbolt.
+SUBSYSTEM=="pci", ATTRS{vendor}=="0x10de", ATTRS{device}=="0x2504", ATTR{driver_override}="vfio-pci"
+SUBSYSTEM=="pci", ATTRS{vendor}=="0x10de", ATTRS{device}=="0x228e", ATTR{driver_override}="vfio-pci"

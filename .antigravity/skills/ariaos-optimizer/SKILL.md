@@ -20,9 +20,9 @@ This skill helps you refine the AriaOS codebase by comparing it with the active 
 - Ensure `dnf5 clean all` is used after every major install step.
 
 ### 3. Performance Tuning
-- Suggest `sysctl` tweaks based on hardware (e.g., eGPU usage, SSD optimization).
-- Optimize eGPU scripts (`egpu-up.sh`, `egpu-down.sh`) for faster loading and better error handling.
-- Review `blacklist-nvidia.conf` and other `modprobe.d` configs to ensure proper driver management.
+- Suggest `sysctl` tweaks based on hardware (e.g., VM workload, SSD optimization).
+- Review `blacklist-nvidia.conf`, the VFIO kernel args, and the udev rules to confirm the eGPU stays reserved for `llama-vm`.
+- Check the guest little footprint (`llama-vm on|off`, VFIO binding, endpoint latency) instead of driver loading speed.
 
 ### 4. Hardware-Specific Refinements
 - Use `lshw`, `lspci`, and `lsusb` to detect hardware and suggest missing drivers or firmware in the `Containerfile`.

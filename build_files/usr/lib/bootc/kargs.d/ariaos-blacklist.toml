@@ -1,1 +1,1 @@
-kargs = ["rd.driver.blacklist=nvidia,nvidia_modeset,nvidia_uvm,nvidia_drm,nouveau", "modprobe.blacklist=nvidia,nvidia_modeset,nvidia_uvm,nvidia_drm,nouveau", "nvidia-drm.modeset=0"]
+kargs = ["rd.driver.blacklist=nvidia,nvidia_modeset,nvidia_uvm,nvidia_drm,nouveau", "modprobe.blacklist=nvidia,nvidia_modeset,nvidia_uvm,nvidia_drm,nouveau"]

@@ -25,8 +25,8 @@ RUN dnf install -y 'dnf-command(builddep)' rpm-build && \
         freerdp-*.src.rpm && \
     echo "AriaOS: FreeRDP RPMs built with FFmpeg/x264 + VAAPI."
 
-# L'immagine base pulita con i driver NVIDIA
-FROM ghcr.io/blue-build/base-images/fedora-silverblue-nvidia:44
+# L'immagine base pulita, senza alcun driver NVIDIA
+FROM ghcr.io/blue-build/base-images/fedora-silverblue:44
 
 # ==========================================
 # 1. COPIA FILE CUSTOM E PERMESSI
@@ -38,10 +38,10 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     # build_files alone does not remove files inherited by an image upgrade.
     rm -rf /usr/share/aria /usr/share/aria-gguf-engine && \
     rm -f /usr/bin/aria /usr/lib/sysusers.d/ai-compute.conf && \
-    chmod +x /usr/bin/egpu-up.sh /usr/bin/egpu-down.sh /usr/bin/backup /usr/bin/restore /usr/bin/ariaos-daw-launcher && \
-    chmod 0440 /etc/sudoers.d/egpu /etc/sudoers.d/tuned
+    chmod +x /usr/bin/llama-vm /usr/bin/backup /usr/bin/restore /usr/bin/ariaos-daw-launcher && \
+    chmod 0440 /etc/sudoers.d/llama-vm /etc/sudoers.d/tuned
 
-RUN visudo -cf /etc/sudoers.d/egpu && \
+RUN visudo -cf /etc/sudoers.d/llama-vm && \
     visudo -cf /etc/sudoers.d/tuned
 
 # ==========================================
@@ -54,9 +54,6 @@ RUN --mount=type=bind,from=build-tools,source=/,target=/ariaos-build \
 
 RUN --mount=type=bind,from=build-tools,source=/,target=/ariaos-build \
     bash /ariaos-build/scripts/build/configure-services.sh
-
-RUN --mount=type=bind,from=build-tools,source=/,target=/ariaos-build \
-    bash /ariaos-build/scripts/build/configure-nvidia-policy.sh
 
 RUN --mount=type=bind,from=build-tools,source=/,target=/ariaos-build \
     bash /ariaos-build/scripts/build/install-kubernetes-tools.sh \
@@ -96,7 +93,7 @@ RUN cp -n /usr/share/plymouth/themes/spinner/*.png /usr/share/plymouth/themes/ar
     plymouth-set-default-theme ariaos && \
     # Creiamo /var/roothome per evitare che dracut fallisca a causa di /root come symlink rotto nel container
     mkdir -p /var/roothome && \
-    # Rigeneriamo l'initramfs ALLA FINE per applicare le esclusioni NVIDIA e TPM
+    # Rigeneriamo l'initramfs ALLA FINE per applicare i driver VFIO, le esclusioni NVIDIA e il TPM
     dracut -f --regenerate-all
 
 # ==========================================

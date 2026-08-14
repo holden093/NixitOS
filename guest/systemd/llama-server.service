@@ -1,0 +1,16 @@
+[Unit]
+Description=AriaOS guest: endpoint OpenAI-compatible (llama.cpp)
+After=models.mount network.target
+Wants=models.mount
+Requires=models.mount
+
+[Service]
+Type=simple
+User=llama
+Group=llama
+ExecStart=/usr/local/bin/llama-server.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

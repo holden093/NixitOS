@@ -60,21 +60,30 @@ for module in nvidia nvidia_uvm nouveau nvidia_modeset nvidia_drm; do
   run_image grep -Fqx "install $module /bin/false" /etc/modprobe.d/blacklist-nvidia.conf
 done
 
-for unit in podman.socket tuned.service btrfs-scrub.timer btrfs-balance.timer; do
+if run_image rpm -q nvidia-driver >/dev/null 2>&1 ||
+   run_image rpm -q akmod-nvidia >/dev/null 2>&1; then
+  echo "NVIDIA host driver packages must not be present in the image." >&2
+  exit 1
+fi
+
+for vfio_path in \
+  /usr/lib/bootc/kargs.d/ariaos-vfio.toml \
+  /usr/lib/udev/rules.d/69-ariaos-vfio.rules \
+  /usr/bin/llama-vm; do
+  if ! run_image test -e "$vfio_path"; then
+    echo "Required VFIO/VM path missing: $vfio_path" >&2
+    exit 1
+  fi
+done
+
+for unit in podman.socket virtqemud.socket tuned.service btrfs-scrub.timer btrfs-balance.timer; do
   assert_unit_state "$unit" enabled
 done
-for unit in \
-  ModemManager.service \
-  nvidia-hibernate.service \
-  nvidia-resume.service \
-  nvidia-suspend.service \
-  nvidia-suspend-then-hibernate.service \
-  nvidia-powerd.service \
-  nvidia-persistenced.service; do
+for unit in ModemManager.service; do
   assert_unit_state "$unit" masked
 done
 
-for sudoers_file in egpu tuned; do
+for sudoers_file in llama-vm tuned; do
   mode=$(run_image stat -c '%a' "/etc/sudoers.d/$sudoers_file")
   if [[ $mode != 440 ]]; then
     echo "Unexpected sudoers mode for $sudoers_file: $mode" >&2
@@ -84,6 +93,8 @@ done
 
 run_image grep -Fqx 'g aria-games - -' /usr/lib/sysusers.d/aria-games.conf
 run_image grep -Fqx 'v /var/games 2775 root aria-games - -' \
+  /usr/lib/tmpfiles.d/ariaos-subvols.conf
+run_image grep -Fqx 'v /var/vms 0755 root root - -' \
   /usr/lib/tmpfiles.d/ariaos-subvols.conf
 
 for build_path in /ariaos-build /scripts/build /versions/external-tools.env; do

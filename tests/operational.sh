@@ -95,20 +95,63 @@ grep -q 'tuned-adm profile latency-performance' "$ARIAOS_TEST_LOG" || \
 grep -q 'tuned-adm profile balanced-battery' "$ARIAOS_TEST_LOG" || \
   fail "DAW launcher did not restore the original profile"
 
-new_environment egpu_up
-mock_commands lspci modprobe nvidia-modprobe nvidia-smi udevadm chmod sleep
-run_as_mock_root bash "$repo_root/build_files/usr/bin/egpu-up.sh"
-for module in nvidia nvidia_modeset nvidia_uvm nvidia_drm; do
-  grep -q "^modprobe --ignore-install $module$" "$ARIAOS_TEST_LOG" || \
-    fail "eGPU activation omitted $module"
-done
+vfio_drivers() {
+  mkdir -p "$ARIAOS_TEST_STATE/sys/bus/pci/drivers/vfio-pci" \
+    "$ARIAOS_TEST_STATE/sys/bus/pci/drivers/snd_hda_intel"
+}
 
-new_environment egpu_down
-mock_commands ls modprobe lsmod sleep
-run_as_mock_root bash "$repo_root/build_files/usr/bin/egpu-down.sh"
-for module in nvidia_uvm nvidia_drm nvidia_modeset nvidia; do
-  grep -q "^modprobe -r $module$" "$ARIAOS_TEST_LOG" || \
-    fail "eGPU shutdown omitted $module"
+new_environment llama_vm_on
+export ARIAOS_TEST_SCENARIO=llama_vm_start
+mkdir -p "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0" \
+  "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1"
+vfio_drivers
+ln -s ../../drivers/vfio-pci "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/driver"
+ln -s ../../drivers/vfio-pci "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1/driver"
+: > "$ARIAOS_TEST_STATE/llama.qcow2"
+mkdir -p "$ARIAOS_TEST_STATE/models"
+mock_commands lspci virsh curl sleep
+run_as_mock_root env \
+  LLAMA_VM_SYSFS="$ARIAOS_TEST_STATE/sys" \
+  LLAMA_VM_DISK="$ARIAOS_TEST_STATE/llama.qcow2" \
+  LLAMA_VM_MODELS="$ARIAOS_TEST_STATE/models" \
+  bash "$repo_root/build_files/usr/bin/llama-vm" on
+for token in \
+  "lspci -D -n -d 10de:2504" \
+  "lspci -D -n -d 10de:228e" \
+  "virsh -c qemu:///system define /tmp/llama-vm" \
+  "virsh -c qemu:///system start llama-vm" \
+  "curl -fsS http://127.0.0.1:8080/v1/models"; do
+  grep -qF "$token" "$ARIAOS_TEST_LOG" || \
+    fail "llama-vm on omitted: $token"
 done
+grep -qF "virsh -c qemu:///system undefine --managed-save llama-vm" "$ARIAOS_TEST_LOG" || \
+  fail "llama-vm on did not redefine the domain"
+
+new_environment llama_vm_on_unbound
+export ARIAOS_TEST_SCENARIO=llama_vm_start
+mkdir -p "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0" \
+  "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1"
+: > "$ARIAOS_TEST_STATE/llama.qcow2"
+mkdir -p "$ARIAOS_TEST_STATE/models"
+vfio_drivers
+ln -s ../../drivers/vfio-pci "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/driver"
+ln -s ../../drivers/snd_hda_intel "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.1/driver"
+mock_commands lspci virsh curl
+if run_as_mock_root env \
+  LLAMA_VM_SYSFS="$ARIAOS_TEST_STATE/sys" \
+  LLAMA_VM_DISK="$ARIAOS_TEST_STATE/llama.qcow2" \
+  LLAMA_VM_MODELS="$ARIAOS_TEST_STATE/models" \
+  bash "$repo_root/build_files/usr/bin/llama-vm" on; then
+  fail "llama-vm on succeeded with audio function not in vfio-pci"
+fi
+grep -qF "virsh -c qemu:///system start llama-vm" "$ARIAOS_TEST_LOG" && \
+  fail "llama-vm on started the VM despite vfio misbinding"
+
+new_environment llama_vm_off
+unset ARIAOS_TEST_SCENARIO
+mock_commands virsh sleep
+run_as_mock_root bash "$repo_root/build_files/usr/bin/llama-vm" off
+grep -qF "virsh -c qemu:///system shutdown llama-vm" "$ARIAOS_TEST_LOG" || \
+  fail "llama-vm off did not shut down the VM"
 
 echo "Operational tests passed."

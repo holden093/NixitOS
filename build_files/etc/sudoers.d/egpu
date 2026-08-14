@@ -1,2 +1,0 @@
-# Permetti agli utenti del gruppo wheel di gestire la eGPU senza password
-%wheel ALL=(ALL) NOPASSWD: /usr/bin/egpu-up.sh, /usr/bin/egpu-down.sh
