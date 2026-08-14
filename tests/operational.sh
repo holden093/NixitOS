@@ -64,12 +64,13 @@ run_as_ariaos_user() {
   fi
 }
 
-egpu_env() {
-  printf '%s\n' \
-    "ARIAOS_EGPU_SYSFS=$ARIAOS_TEST_STATE/sys" \
-    "ARIAOS_EGPU_CDI_DIR=$ARIAOS_TEST_STATE/cdi" \
-    "ARIAOS_EGPU_DEV_GLOB=$ARIAOS_TEST_STATE/dev/nvidia*" \
+egpu_env_args() {
+  egpu_env_vars=(
+    "ARIAOS_EGPU_SYSFS=$ARIAOS_TEST_STATE/sys"
+    "ARIAOS_EGPU_CDI_DIR=$ARIAOS_TEST_STATE/cdi"
+    "ARIAOS_EGPU_DEV_GLOB=$ARIAOS_TEST_STATE/dev/nvidia*"
     "ARIAOS_EGPU_KILL=$ARIAOS_TEST_STATE/bin/kill"
+  )
 }
 
 egpu_devices() {
@@ -126,7 +127,8 @@ new_environment egpu_up
 : > "$ARIAOS_TEST_STATE/modules"
 egpu_devices
 mock_commands lspci modprobe lsmod nvidia-modprobe nvidia-ctk nvidia-smi lsof
-run_as_mock_root env $(egpu_env) bash "$repo_root/build_files/usr/libexec/ariaos-egpu" up
+egpu_env_args
+run_as_mock_root env "${egpu_env_vars[@]}" bash "$repo_root/build_files/usr/libexec/ariaos-egpu" up
 grep -qF 'modprobe nvidia' "$ARIAOS_TEST_LOG" || \
   fail "ariaos-egpu up did not load nvidia"
 grep -qF 'modprobe nvidia_uvm' "$ARIAOS_TEST_LOG" || \
@@ -147,7 +149,8 @@ export ARIAOS_TEST_LSOF_PIDS=12345
 egpu_devices
 : > "$ARIAOS_TEST_STATE/cdi/nvidia.yaml"
 mock_commands lspci modprobe lsmod lsof kill sleep
-run_as_mock_root env $(egpu_env) bash "$repo_root/build_files/usr/libexec/ariaos-egpu" down
+egpu_env_args
+run_as_mock_root env "${egpu_env_vars[@]}" bash "$repo_root/build_files/usr/libexec/ariaos-egpu" down
 grep -qF 'kill -15 12345' "$ARIAOS_TEST_LOG" || \
   fail "ariaos-egpu down did not terminate the client"
 kill_line=$(grep -nF 'kill -15 12345' "$ARIAOS_TEST_LOG" | cut -d: -f1)
@@ -166,7 +169,8 @@ export ARIAOS_TEST_SCENARIO=egpu_no_unload
 printf 'nvidia\nnvidia_uvm\n' > "$ARIAOS_TEST_STATE/modules"
 egpu_devices
 mock_commands lspci modprobe lsmod lsof kill sleep
-if run_as_mock_root env $(egpu_env) bash "$repo_root/build_files/usr/libexec/ariaos-egpu" down; then
+egpu_env_args
+if run_as_mock_root env "${egpu_env_vars[@]}" bash "$repo_root/build_files/usr/libexec/ariaos-egpu" down; then
   fail "ariaos-egpu down succeeded with a module still loaded"
 fi
 [[ ! -e "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/remove" ]] || \

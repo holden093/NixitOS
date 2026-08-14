@@ -84,9 +84,11 @@ cmd_up() {
 
 cmd_down() {
   echo "==> Terminazione client attivi sulla eGPU..."
-  if compgen -G "$DEV_GLOB" >/dev/null 2>&1; then
+  local -a devices
+  mapfile -t devices < <(compgen -G "$DEV_GLOB" 2>/dev/null || true)
+  if (( ${#devices[@]} > 0 )); then
     local pids
-    pids=$("$LSOF" -t $DEV_GLOB 2>/dev/null | sort -u | tr '\n' ' ')
+    pids=$("$LSOF" -t "${devices[@]}" 2>/dev/null | sort -u | tr '\n' ' ')
     if [[ -n $pids ]]; then
       echo "    Terminazione processi: ${pids}"
       # shellcheck disable=SC2086
