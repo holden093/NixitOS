@@ -40,7 +40,9 @@ La eGPU NVIDIA (RTX 3060 `10de:2504` + audio `10de:228e`) è **compute-only**: a
 
 ### Inferenza locale (ariaos llm)
 
-`ariaos llm` orchestra due backend di inferenza mutuamente esclusivi. I motori (llama.cpp) vivono nei **tuoi toolbox**, non nell'immagine: l'OS fornisce driver, spec CDI e orchestrazione, mentre i comandi di avvio dei server sono dichiarati in `/etc/ariaos/llm.conf` (default in `/usr/lib/ariaos/llm.conf`).
+`ariaos llm` orchestra due backend di inferenza locale mutuamente esclusivi. L'immagine **non contiene né motori né modelli**: fornisce driver, spec CDI e orchestrazione, mentre llama.cpp vive nei tuoi toolbox e i comandi di avvio dei server sono dichiarati in `/etc/ariaos/llm.conf` (default in `/usr/lib/ariaos/llm.conf`).
+
+#### Comandi
 
 ```bash
 ariaos llm status              # stato di entrambi i backend e dei driver
@@ -48,12 +50,46 @@ ariaos llm intel up|down       # backend Vulkan su Intel Arc (porta 8080)
 ariaos llm nvidia up|down      # backend CUDA sulla eGPU (porta 8081)
 ```
 
-Esempi d'uso:
+Il comando gira **sempre come utente** e rifiuta esplicitamente l'esecuzione come root: deve poter lanciare processi utente. La parte privilegiata (caricamento/scaricamento del driver NVIDIA) è affidata esclusivamente a `ariaos-egpu.service`.
 
-- **In mobilità**: `ariaos llm intel up` — modello in RAM eseguito da Intel Arc via Vulkan.
-- **A casa con l'enclosure**: `ariaos llm nvidia up` — carica i moduli NVIDIA, genera la spec CDI in `/run/cdi` e avvia il server CUDA; `nvidia down` ferma il server, scarica i moduli e rimuove i device per lo scollegamento.
+#### Stati riportati da `status`
 
-`up` su un backend rifiuta l'avvio se l'altro è attivo (niente contesa di RAM/GPU o conflitti di porta). Il comando gira come utente; la parte privilegiata passa da `ariaos-egpu.service`, autorizzata via polkit per il gruppo `wheel` solo su quella unit.
+Per ogni backend:
+
+| Stato | Significato |
+|---|---|
+| `non configurato` | `START` vuoto in `llm.conf`: il backend non è ancora dichiarato |
+| `fermo` | comando `START` presente, ma l'endpoint di health check non risponde |
+| `attivo su porta N` | l'endpoint risponde |
+
+Per il backend `nvidia` viene indicato anche `driver attivo`/`driver fermo`, in base allo stato di `ariaos-egpu.service`.
+
+#### Mutua esclusione e porte
+
+I due backend sono esclusivi: `intel up` rifiuta se il backend NVIDIA è attivo (server raggiungibile o driver caricato), e `nvidia up` rifiuta se il backend Intel risponde. Il vincolo serve a evitare contesa di RAM/GPU, non soltanto di porta. Le porte sono fisse e distinte: `INTEL_PORT=8080`, `NVIDIA_PORT=8081`.
+
+#### Ciclo di vita NVIDIA
+
+`ariaos llm nvidia up` esegue, nell'ordine:
+
+1. `systemctl start ariaos-egpu.service` (via polkit): carica `nvidia` + `nvidia_uvm`, crea i device node, genera la spec CDI in `/run/cdi/nvidia.yaml`;
+2. il comando `NVIDIA_START` come utente;
+3. attesa dell'endpoint di health check (default 120 s).
+
+`ariaos llm nvidia down` fa il percorso inverso: arresta il server, attende che la porta si liberi, poi `systemctl stop ariaos-egpu.service` che termina i client residui, scarica i moduli e rimuove i device dal bus PCIe.
+
+#### Privilegi e polkit
+
+L'autorizzazione passwordless per `ariaos-egpu.service` vale solo per il gruppo `wheel` e per **sessioni locali attive**. Via SSH la regola non scatta: `ariaos llm nvidia up/down` chiederà l'autenticazione amministrativa.
+
+#### Scollegamento dell'eGPU
+
+> [!CAUTION]
+> Scollegamento **a freddo** soltanto. Eseguire `ariaos llm nvidia down` (che rimuove anche i device dal bus PCIe) prima di scollegare il cavo Thunderbolt. Non scollegare mai con il driver attivo.
+
+#### Limiti di VRAM e offload
+
+La RTX 3060 ha 12 GB di VRAM. Un modello più grande (es. Gemma 4 26B Q4_K_XL ≈ 14,2 GB) non ci sta interamente: il profilo CUDA va costruito con `--n-cpu-moe` (esperti in RAM, strati densi + KV cache in VRAM) o con un modello più piccolo. La scelta del profilo e del modello è tua, non dell'immagine.
 
 ### Backup e storage
 
@@ -106,14 +142,86 @@ PCR 8 e 9 non sono adatti a questo sistema: aggiornamenti `bootc` modificano ker
 
 ### Configurare i backend di inferenza
 
-L'immagine non contiene né modelli né motori. Copiare il default e dichiarare i propri launcher:
+L'immagine non contiene né modelli né motori. Il collegamento tra `ariaos llm` e i tuoi launcher avviene tramite un file di configurazione.
+
+#### Schema e precedenza
+
+Le variabili sono otto, quattro per backend:
+
+| Variabile | Significato | Default |
+|---|---|---|
+| `INTEL_PORT` / `NVIDIA_PORT` | porta del server (solo informativa) | `8080` / `8081` |
+| `INTEL_HEALTH` / `NVIDIA_HEALTH` | URL dell'health check interrogato da `status`, `up`, `down` | `http://127.0.0.1:PORT/health` |
+| `INTEL_START` / `NVIDIA_START` | comando eseguito con `bash -c` per avviare il server (vuoto = non configurato) | *vuoto* |
+| `INTEL_STOP` / `NVIDIA_STOP` | comando eseguito per arrestare il server | *vuoto* |
+
+Precedenza: `/usr/lib/ariaos/llm.conf` (default distribuito, ripristinato dagli aggiornamenti) è letto per primo; `/etc/ariaos/llm.conf` è letto dopo e **sovrascrive**. Le tue personalizzazioni stanno solo in `/etc`, che è persistente tra gli aggiornamenti dell'immagine.
+
+Configurazione iniziale:
 
 ```bash
 sudo cp /usr/lib/ariaos/llm.conf /etc/ariaos/llm.conf
 sudoedit /etc/ariaos/llm.conf
 ```
 
-Per ogni backend si dichiarano porta, endpoint di health check e comandi `START`/`STOP` (eseguiti come utente). I toolbox con llama.cpp (Vulkan e CUDA) sono artefatti personali non riproducibili dall'immagine: `ariaos llm status` li riporta come "non configurato" finché non li dichiari.
+`START`/`STOP` girano **come utente** (il comando `ariaos` rifiuta root), quindi possono riferirsi a `$HOME` e ai toolbox personali. L'health check usa `curl -fsS -m 3`: l'endpoint deve rispondere con un codice 2xx (il `/health` di llama-server lo fa).
+
+#### Esempio backend Intel (Arc / Vulkan)
+
+Riuso del launcher già esistente, senza modifiche: il profilo Gemma su Arc resta quello che usi oggi.
+
+```bash
+INTEL_PORT=8080
+INTEL_HEALTH=http://127.0.0.1:8080/health
+INTEL_START=/home/kevin/GIT/test/gemma4-server start
+INTEL_STOP=/home/kevin/GIT/test/gemma4-server stop
+```
+
+`ariaos llm intel up` esegue `bash -c "$INTEL_START"` e attende che `INTEL_HEALTH` risponda. Da quel momento `gemma4-server` resta disponibile anche direttamente; `ariaos llm` aggiunge solo mutua esclusione e stato unificato.
+
+#### Esempio backend NVIDIA (eGPU / CUDA)
+
+Richiede un llama.cpp **compilato con CUDA** in un container che riceva la GPU via CDI. La spec CDI è generata da `ariaos-egpu up` in `/run/cdi/nvidia.yaml`; Podman la consuma con `--device nvidia.com/gpu=all`. Nota: `toolbox run` non inietta device GPU, serve `podman run` (o distrobox).
+
+Un launcher dedicato (es. `/home/kevin/bin/nvidia-llm`) con le solite azioni `start|stop|status`:
+
+```bash
+#!/usr/bin/env bash
+# start avvia il server CUDA in un container con la GPU via CDI
+case "${1:-start}" in
+  start)
+    podman run --rm -d --name nvidia-llm \
+      --device nvidia.com/gpu=all \
+      -v "$HOME/models:/models:ro" \
+      -p 127.0.0.1:8081:8081 \
+      <immagine-llama-cuda> \
+      llama-server -m /models/... --n-gpu-layers 999 --port 8081
+    ;;
+  stop) podman rm -f nvidia-llm ;;
+esac
+```
+
+Dichiararlo in `/etc/ariaos/llm.conf`:
+
+```bash
+NVIDIA_PORT=8081
+NVIDIA_HEALTH=http://127.0.0.1:8081/health
+NVIDIA_START=/home/kevin/bin/nvidia-llm start
+NVIDIA_STOP=/home/kevin/bin/nvidia-llm stop
+```
+
+Ordine corretto per l'uso: `ariaos llm nvidia up` carica prima il driver e genera la spec CDI, poi esegue `NVIDIA_START`; se il container parte prima che `/run/cdi/nvidia.yaml` esista, il mount GPU fallisce.
+
+#### Riepilogo d'uso
+
+```bash
+ariaos llm status        # verifica che un backend sia "non configurato", "fermo" o "attivo"
+ariaos llm intel up      # mobilità: Gemma su Arc, porta 8080
+ariaos llm nvidia up     # casa con enclosure: driver + CUDA, porta 8081
+ariaos llm nvidia down   # prima di scollegare il cavo Thunderbolt
+```
+
+Se `status` riporta `non configurato`, il backend non ha ancora `START` valorizzato in `/etc/ariaos/llm.conf`.
 
 ## Struttura del repository
 
