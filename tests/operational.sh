@@ -178,40 +178,4 @@ fi
 [[ ! -e "$ARIAOS_TEST_STATE/sys/bus/pci/devices/0000:06:00.0/remove" ]] || \
   fail "ariaos-egpu down removed the device despite a busy module"
 
-new_environment ariaos_intel_refusal
-cat > "$ARIAOS_TEST_STATE/llm.conf" <<'EOF'
-INTEL_PORT=8080
-INTEL_HEALTH=http://127.0.0.1:8080/health
-INTEL_START=/bin/true
-INTEL_STOP=
-NVIDIA_PORT=8081
-NVIDIA_HEALTH=http://127.0.0.1:8081/health
-NVIDIA_START=/bin/true
-NVIDIA_STOP=
-EOF
-: > "$ARIAOS_TEST_STATE/egpu-active"
-mock_commands systemctl curl
-cp "$repo_root/build_files/usr/bin/ariaos" "$ARIAOS_TEST_STATE/ariaos"
-chmod a+rx "$ARIAOS_TEST_STATE/ariaos"
-output=$(
-  run_as_ariaos_user env PATH="$ARIAOS_TEST_STATE/bin:/usr/bin:/bin" \
-    ARIAOS_LLM_CONF_DEFAULT="$ARIAOS_TEST_STATE/llm.conf" \
-    ARIAOS_LLM_CONF_OVERRIDE="$ARIAOS_TEST_STATE/nonexistent" \
-    ARIAOS_LLM_SYSTEMCTL="$ARIAOS_TEST_STATE/bin/systemctl" \
-    ARIAOS_LLM_CURL="$ARIAOS_TEST_STATE/bin/curl" \
-    bash "$ARIAOS_TEST_STATE/ariaos" llm intel up 2>&1
-) || true
-if [[ -z $output ]]; then
-  fail "ariaos llm intel up succeeded with the NVIDIA backend active"
-fi
-if ! grep -q 'Il backend NVIDIA e. attivo' <<< "$output"; then
-  fail "ariaos llm intel up refused for the wrong reason: $output"
-fi
-
-new_environment ariaos_root
-mock_commands systemctl curl
-if run_as_mock_root bash "$repo_root/build_files/usr/bin/ariaos" llm status; then
-  fail "ariaos llm succeeded when run as root"
-fi
-
 echo "Operational tests passed."

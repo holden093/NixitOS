@@ -1,5 +1,5 @@
 # AriaOS: stato on-demand della eGPU NVIDIA (compute-only).
-# Non abilitata: viene avviata da 'ariaos llm nvidia up' tramite polkit.
+# Non abilitata: viene avviata manualmente tramite polkit quando serve la eGPU.
 [Unit]
 Description=AriaOS NVIDIA eGPU compute state
 After=local-fs.target

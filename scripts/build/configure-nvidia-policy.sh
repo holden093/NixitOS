@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # AriaOS: policy NVIDIA compute-only.
 # La eGPU resta non inizializzata a boot: solo ariaos-egpu.service carica i
-# moduli di calcolo (nvidia, nvidia_uvm) quando serve l'inferenza CUDA.
+# moduli di calcolo (nvidia, nvidia_uvm) quando serve il calcolo CUDA.
 
 readonly inherited_policy_files=(
   /usr/lib/dracut/dracut.conf.d/99-nvidia.conf
@@ -22,6 +22,8 @@ readonly masked_units=(
   nvidia-suspend-then-hibernate.service
   nvidia-powerd.service
   nvidia-persistenced.service
+  nvidia-cdi-refresh.service
+  nvidia-cdi-refresh.path
 )
 
 rm -f "${inherited_policy_files[@]}"

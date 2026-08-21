@@ -8,7 +8,7 @@
 ## eGPU Management (NVIDIA compute-only, on-demand)
 - **Display-off**: `nvidia_drm`, `nvidia_modeset`, and `nouveau` must stay hard-blocked (`install <module> /bin/false`); without `nvidia_drm` there is no DRM node and GNOME never enumerates the eGPU.
 - **On-demand**: `nvidia` and `nvidia_uvm` are plain-blacklisted and loaded only by `ariaos-egpu.service`; the boot kargs keep `nvidia-drm.modeset=0`.
-- **Cold-unplug**: Always `ariaos llm nvidia down` (which also removes the PCI devices) before disconnecting the Thunderbolt cable.
+- **Cold-unplug**: Always stop `ariaos-egpu.service` (which also removes the PCI devices) before disconnecting the Thunderbolt cable.
 
 ## Intel Arc (Media and Compute)
 - **Media Runtime**: Ensure `libva-intel-media-driver` is correctly configured for hardware acceleration in apps like OBS or FFmpeg.

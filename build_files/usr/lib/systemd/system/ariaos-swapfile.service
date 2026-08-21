@@ -1,0 +1,18 @@
+# AriaOS: provisioning dello swapfile su disco (per-macchina, non nell'immagine).
+# DefaultDependencies=no come per le unit di swap: swap.target viene raggiunto
+# prima di sysinit.target, quindi le dipendenze implicite creerebbero un ciclo.
+[Unit]
+Description=AriaOS on-disk swapfile provisioning
+DefaultDependencies=no
+RequiresMountsFor=/var
+ConditionPathExists=!/var/swapfile
+Before=var-swapfile.swap shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/ariaos-swapfile
+
+[Install]
+WantedBy=swap.target

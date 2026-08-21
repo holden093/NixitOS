@@ -40,15 +40,18 @@ Every structural or behavioral change must update both this contract and `README
 - `nvidia` and `nvidia_uvm` must remain **on-demand**: plain `blacklist` (no autoload), never `install /bin/false`, so explicit `modprobe` from the service works.
 - The boot kargs keep `nvidia-drm.modeset=0`; `rd.driver.blacklist` and `modprobe.blacklist` cover `nvidia_drm,nvidia_modeset,nouveau` only.
 - `ariaos-egpu.service` is the only privileged NVIDIA entry point, gated by a polkit rule for the `wheel` group on that single unit. It loads the compute modules, creates the device nodes, generates the runtime CDI spec in `/run/cdi`, and on stop kills clients, unloads the modules, and removes the PCI devices so the Thunderbolt cable can be unplugged.
-- `nvidia-suspend/resume/hibernate`, `nvidia-powerd`, and `nvidia-persistenced` stay masked; the base image's autoload files (`/usr/lib/modprobe.d/nvidia*.conf`, `/usr/lib/bootc/kargs.d/bluebuild-kargs.toml`, NVIDIA udev rules) are removed at build time by `configure-nvidia-policy.sh`, before the final initramfs regeneration.
-- Cold-unplug only: run `ariaos llm nvidia down` (which also removes the PCI devices) before disconnecting. Never unplug while the driver is bound.
+- `nvidia-suspend/resume/hibernate`, `nvidia-powerd`, `nvidia-persistenced`, and `nvidia-cdi-refresh` (service and path) stay masked; the base image's autoload files (`/usr/lib/modprobe.d/nvidia*.conf`, `/usr/lib/bootc/kargs.d/bluebuild-kargs.toml`, NVIDIA udev rules) are removed at build time by `configure-nvidia-policy.sh`, before the final initramfs regeneration. Masking the CDI refresh keeps the driver from being modprobed at boot: the runtime CDI spec is generated exclusively by `ariaos-egpu up` in `/run/cdi`.
+- Cold-unplug only: stop `ariaos-egpu.service` (which also removes the PCI devices) before disconnecting. Never unplug while the driver is bound.
 - Intel Arc is always the desktop GPU: no NVIDIA module may ever bind at boot, and no NVIDIA path may drive the display.
 - Do not replace Fedora's kernel with a third-party realtime kernel.
 
 ## 4. Resource and storage invariants
 
 - Keep Italian and English locale support. `glibc-all-langpacks` is removed; `glibc-langpack-it` and `langpacks-it` stay installed.
-- Keep zRAM at 16 GB using `zstd`. Do not change it without explicit user approval.
+- zRAM stays disabled (`zram-size = 0`): compressed in-RAM swap steals physical memory from local
+  inference. Swap is a 32 GiB Btrfs swapfile at `/var/swapfile`, created on first boot by
+  `ariaos-swapfile.service` and activated by `var-swapfile.swap`. Do not reintroduce zRAM without
+  explicit user approval.
 - Keep the NMI watchdog disabled and Btrfs root compression at `zstd:1` through bootc kernel arguments.
 - Keep `btrfsmaintenance` and the scrub/balance timers enabled.
 - `/var/games` is a Btrfs subvolume declared through tmpfiles and writable through the declarative `aria-games` group. Never hardcode a personal user or home path.
@@ -85,12 +88,12 @@ Every structural or behavioral change must update both this contract and `README
 - Generate system-wide Bash completion for kubectl and Minikube.
 - Use rootless Podman for Minikube. Do not add Docker or an always-on Kubernetes service solely for local development.
 
-### Inferenza locale (ariaos llm)
+### GPU toolchain
 
-- The host never runs an inference engine: llama.cpp lives only in user toolboxes, outside the image. `ariaos llm` orchestrates the two backends and delegates server startup to commands declared in `/usr/lib/ariaos/llm.conf` (overridable in `/etc/ariaos/llm.conf`); no model or engine path may be hardcoded in the image.
-- `ariaos llm intel` targets Intel Arc (Vulkan); `ariaos llm nvidia` targets the compute-only eGPU (CUDA). The two backends are mutually exclusive: `up` on one refuses while the other is active, preventing RAM/GPU contention. Ports are fixed and distinct (`INTEL_PORT=8080`, `NVIDIA_PORT=8081`).
-- `ariaos llm` must run as the invoking user, never as root. The privileged NVIDIA path belongs exclusively to `ariaos-egpu.service`, authorized passwordless only for the `wheel` group on that unit via polkit.
-- `nvidia-container-toolkit` provides CDI support; `ariaos-egpu up` generates the spec in `/run/cdi` from the runtime driver. Any change to the driver/module policy must update `configure-nvidia-policy.sh`, the blacklist/kargs files, and the operational tests together.
+- The host image contains the CMake/Ninja/C++ toolchain, Vulkan headers and the CUDA toolkit so users can compile llama.cpp themselves in `/var/home`.
+- The host image must not contain llama.cpp binaries, model engines, model storage, launchers, or toolbox-specific configuration.
+- `ariaos-egpu.service` is the manual privileged entry point for the compute-only NVIDIA eGPU. It loads `nvidia` and `nvidia_uvm`, creates device nodes, and generates CDI for optional GPU containers.
+- `nvidia-container-toolkit` remains installed for CDI-enabled Podman containers. Any change to the driver/module policy must update `configure-nvidia-policy.sh`, the blacklist/kargs files, and the operational tests together.
 
 ## 7. Empirical workflow
 
@@ -109,7 +112,7 @@ If a build or command waits for an approval prompt and times out, stop. Do not i
 - Bash syntax and ShellCheck when available;
 - sudoers parsing;
 - policy scans for personal paths, retired model components in the host image, legacy build mutations, and the NVIDIA display-off/on-demand policy;
-- isolated operational tests for backup cleanup, restore rejection and rollback, DAW profile restoration, and ariaos-egpu / ariaos llm sequencing;
+- isolated operational tests for backup cleanup, restore rejection and rollback, DAW profile restoration, and ariaos-egpu sequencing;
 - `git diff --check`.
 
 After changes to `Containerfile`, `build_files/`, `scripts/build/`, or external versions, `./scripts/preflight.sh` must also pass. It performs the full Podman build and runs `scripts/validate/image.sh`, which verifies:

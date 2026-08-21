@@ -1,0 +1,11 @@
+# AriaOS: swap su disco NVMe al posto di zRAM (vedi zram-generator.conf).
+[Unit]
+Description=AriaOS on-disk swap
+Requires=ariaos-swapfile.service
+After=ariaos-swapfile.service
+
+[Swap]
+What=/var/swapfile
+
+[Install]
+WantedBy=swap.target

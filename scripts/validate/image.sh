@@ -25,12 +25,17 @@ if [[ $freerdp_version != *ariaos* ]]; then
   exit 1
 fi
 
-for package in intel-compute-runtime intel-level-zero nvidia-container-toolkit; do
+for package in intel-compute-runtime intel-level-zero nvidia-container-toolkit \
+  gcc-c++ cmake ninja-build vulkan-headers cuda-toolkit; do
   if ! run_image rpm -q "$package" >/dev/null 2>&1; then
     echo "Required compute/container package is missing: $package" >&2
     exit 1
   fi
 done
+run_image cmake --version >/dev/null
+run_image ninja --version >/dev/null
+run_image /usr/local/cuda/bin/nvcc --version >/dev/null
+run_image test -s /etc/profile.d/cuda.sh
 
 if ! run_image rpm -q nvidia-driver >/dev/null 2>&1; then
   echo "NVIDIA host driver must be present in the image." >&2
@@ -79,29 +84,35 @@ done
 
 run_image grep -Fq 'nvidia-drm.modeset=0' /usr/lib/bootc/kargs.d/ariaos-blacklist.toml
 
-if ! run_image test -x /usr/bin/ariaos; then
-  echo "ariaos command missing or not executable." >&2
-  exit 1
-fi
 if ! run_image test -x /usr/libexec/ariaos-egpu; then
   echo "ariaos-egpu helper missing or not executable." >&2
   exit 1
 fi
+if ! run_image test -x /usr/libexec/ariaos-swapfile; then
+  echo "ariaos-swapfile helper missing or not executable." >&2
+  exit 1
+fi
+
+# Swap su disco: zRAM deve restare disattivato per non sottrarre RAM alle inferenze.
+run_image grep -Fqx 'zram-size = 0' /etc/systemd/zram-generator.conf
+run_image grep -Fqx 'What=/var/swapfile' /usr/lib/systemd/system/var-swapfile.swap
 for path in \
   /usr/lib/systemd/system/ariaos-egpu.service \
-  /usr/share/polkit-1/rules.d/50-ariaos-egpu.rules \
-  /usr/lib/ariaos/llm.conf; do
+  /usr/share/polkit-1/rules.d/50-ariaos-egpu.rules; do
   if ! run_image test -e "$path"; then
-    echo "Required AriaOS LLM/egpu path missing: $path" >&2
+    echo "Required AriaOS GPU path missing: $path" >&2
     exit 1
   fi
 done
 
-for unit in podman.socket virtqemud.socket tuned.service btrfs-scrub.timer btrfs-balance.timer; do
+for unit in podman.socket virtqemud.socket tuned.service btrfs-scrub.timer btrfs-balance.timer \
+  ariaos-swapfile.service var-swapfile.swap; do
   assert_unit_state "$unit" enabled
 done
 assert_unit_state ModemManager.service masked
 assert_unit_state ariaos-egpu.service disabled
+assert_unit_state nvidia-cdi-refresh.service masked
+assert_unit_state nvidia-cdi-refresh.path masked
 
 mode=$(run_image stat -c '%a' /etc/sudoers.d/tuned)
 if [[ $mode != 440 ]]; then

@@ -20,7 +20,7 @@ if [[ -n $removed_model_matches ]]; then
 fi
 
 # Nessun motore di inferenza deve essere installato o costruito nell'immagine:
-# l'host fornisce driver, CDI e orchestrazione; i server vivono in toolbox utente.
+# l'host fornisce driver, CDI e toolchain; i server vivono in /var/home o in container scelti dall'utente.
 if rg -n -i 'install.*\bllama\b|\bgit clone.*llama|copy.*\bllama-server' \
     scripts/build Containerfile; then
   echo "LLM engine installation found in the build definition." >&2
@@ -70,15 +70,14 @@ if grep -Fq 'vfio-pci.ids' "$blacklist_kargs"; then
 fi
 
 for required in \
-  build_files/usr/bin/ariaos \
   build_files/usr/libexec/ariaos-egpu \
   build_files/usr/lib/systemd/system/ariaos-egpu.service \
   build_files/usr/share/polkit-1/rules.d/50-ariaos-egpu.rules \
-  build_files/usr/lib/ariaos/llm.conf \
   build_files/etc/yum.repos.d/nvidia-container-toolkit.repo \
+  build_files/etc/yum.repos.d/cuda-fedora.repo \
   build_files/etc/dracut.conf.d/ariaos-nvidia.conf; do
   if [[ ! -e $required ]]; then
-    echo "Required AriaOS LLM/egpu path missing: $required" >&2
+    echo "Required AriaOS GPU path missing: $required" >&2
     exit 1
   fi
 done

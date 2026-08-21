@@ -45,7 +45,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
           /usr/lib/bootc/kargs.d/ariaos-vfio.toml \
           /usr/lib/udev/rules.d/69-ariaos-vfio.rules \
           /etc/dracut.conf.d/ariaos-vfio.conf && \
-    chmod +x /usr/bin/ariaos /usr/libexec/ariaos-egpu /usr/bin/backup /usr/bin/restore /usr/bin/ariaos-daw-launcher && \
+    chmod +x /usr/libexec/ariaos-egpu /usr/libexec/ariaos-swapfile /usr/bin/backup /usr/bin/restore /usr/bin/ariaos-daw-launcher && \
     chmod 0440 /etc/sudoers.d/tuned
 
 RUN visudo -cf /etc/sudoers.d/tuned

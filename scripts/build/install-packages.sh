@@ -17,9 +17,18 @@ readonly packages=(
   lm_sensors
   glx-utils
   vulkan-loader
+  vulkan-headers
   vulkan-tools
   clinfo
   nvidia-container-toolkit
+
+  # llama.cpp build toolchain (the engine and models stay outside the image)
+  gcc-c++
+  cmake
+  ninja-build
+  make
+  pkgconf-pkg-config
+  cuda-toolkit
 
   # Networking and administration
   wireguard-tools
@@ -38,7 +47,6 @@ readonly packages=(
   virt-manager
   qemu-kvm
   podman-compose
-  distrobox
 
   # Development and Kubernetes
   langpacks-it
@@ -90,6 +98,11 @@ readonly removed_packages=(
   cldr-emoji-annotation
   cldr-emoji-annotation-dtd
 )
+
+# The bootc base exposes /usr/local and /opt as symlinks into /var. CUDA RPMs
+# install their toolkit and profiling tools below both paths, so create the
+# persistent targets first.
+mkdir -p /var/usrlocal /var/opt/nvidia/nsight-systems /var/opt/nvidia/nsight-compute
 
 dnf5 install -y "$rpmfusion_free" "$rpmfusion_nonfree"
 

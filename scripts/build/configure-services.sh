@@ -7,6 +7,8 @@ readonly enabled_units=(
   tuned.service
   btrfs-scrub.timer
   btrfs-balance.timer
+  ariaos-swapfile.service
+  var-swapfile.swap
 )
 
 systemctl enable "${enabled_units[@]}"

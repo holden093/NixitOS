@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# AriaOS: crea lo swapfile su disco al primo boot.
+# 'btrfs filesystem mkswapfile' imposta NOCOW, disattiva la compressione sul
+# file e lo inizializza con mkswap: requisiti obbligatori per lo swap su Btrfs.
+set -Eeuo pipefail
+
+readonly swapfile=/var/swapfile
+readonly swap_size=32G
+
+if [[ -f $swapfile ]]; then
+  exit 0
+fi
+
+btrfs filesystem mkswapfile --size "$swap_size" --uuid clear "$swapfile"
